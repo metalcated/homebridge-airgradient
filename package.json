@@ -1,16 +1,16 @@
 {
   "private": false,
   "displayName": "AirGradient",
-  "name": "homebridge-airgradient",
+  "name": "@metalcated/homebridge-airgradient",
   "version": "3.0.1",
   "description": "Fetches air quality information from AirGradient devices.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Smith8154/homebridge-airgradient.git"
+    "url": "git+https://github.com/metalcated/homebridge-airgradient.git"
   },
   "bugs": {
-    "url": "https://github.com/Smith8154/homebridge-airgradient/issues"
+    "url": "https://github.com/metalcated/homebridge-airgradient/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -48,5 +48,10 @@
     "rimraf": "^5.0.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
+  },
+  "homepage": "https://github.com/metalcated/homebridge-airgradient#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

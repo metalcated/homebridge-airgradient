@@ -2,6 +2,14 @@
 
 This plugin allows you to display the air quality values from your AirGradient devices in HomeKit.
 
+### Installation
+
+Install `@metalcated/homebridge-airgradient` in Homebridge. This is a maintained fork of [Smith8154/homebridge-airgradient](https://github.com/Smith8154/homebridge-airgradient).
+
+Version 3.0.1 accepts Homebridge 2.4.1 beta releases, including 2.4.1-beta.13.
+Keep your existing `AirGradientPlatform` configuration and sensor serial numbers.
+When switching from the original package, back up Homebridge first and replace the original plugin before restarting; running both packages together registers the same platform twice.
+
 ### Features
 
  - Polls your AirGradient devices directly to add your air quality information into HomeKit

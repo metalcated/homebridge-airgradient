@@ -51,6 +51,8 @@ interface SensorConfig {
   offlineAfterFailures?: number;
 }
 
+// Preserve the legacy identifier so Homebridge can translate cached accessories
+// to this scoped package when replacing the original plugin.
 const PLUGIN_NAME = 'homebridge-airgradient';
 const PLATFORM_NAME = 'AirGradientPlatform';
 
@@ -626,5 +628,5 @@ class AirGradientSensor {
 
 export = (homebridge: API) => {
   hap = homebridge.hap;
-  homebridge.registerPlatform('homebridge-airgradient', 'AirGradientPlatform', AirGradientPlatform);
+  homebridge.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, AirGradientPlatform);
 };

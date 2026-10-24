@@ -50,3 +50,12 @@ never automatically adds or removes accessories. Keep supported firmware APIs in
 
 See [emulator coverage and first-device validation](docs/VALIDATION.md) before treating
 this beta as validated on physical hardware.
+
+
+### Project links and support
+
+- [Source code and issues on GitHub](https://github.com/metalcated/homebridge-airgradient)
+- [Package and versions on npm](https://www.npmjs.com/package/@metalcated/homebridge-airgradient)
+- [Support development through PayPal](https://www.paypal.biz/metalcated)
+
+Support is optional and appreciated. All plugin features remain available without a donation.

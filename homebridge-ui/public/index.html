@@ -7,6 +7,11 @@
   <div class="ag-tools"><label for="sensor">Configured monitor</label><select id="sensor" class="form-control"></select><button id="probe" class="btn btn-primary" type="button">Test connection</button><button id="diagnostics" class="btn btn-outline-primary" type="button">Refresh diagnostics</button><button id="history" class="btn btn-outline-primary" type="button">View history</button><button id="export" class="btn btn-outline-primary" type="button">Export diagnostics</button></div>
   <p id="empty-state" hidden>No monitors configured yet. Add the serial number in the settings below when your device arrives, or use Find monitors once it is online.</p>
   <div id="report" aria-live="polite"></div>
+  <nav class="ag-links" aria-label="Project links">
+    <a href="https://github.com/metalcated/homebridge-airgradient" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <a href="https://www.npmjs.com/package/@metalcated/homebridge-airgradient" target="_blank" rel="noopener noreferrer">npm</a>
+    <a href="https://www.paypal.biz/metalcated" target="_blank" rel="noopener noreferrer">Support via PayPal</a>
+  </nav>
   <dialog id="add-dialog" aria-labelledby="add-title"><h3 id="add-title">Add this monitor?</h3><p id="add-summary"></p><p>This stages the monitor in your settings. Save the configuration and restart Homebridge to connect it.</p><div class="ag-actions"><button id="cancel-add" class="btn btn-outline-secondary" type="button">Cancel</button><button id="confirm-add" class="btn btn-primary" type="button">Add to settings</button></div></dialog>
 </section>
 <script src="app.js"></script>

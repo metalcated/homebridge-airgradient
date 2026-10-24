@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.0-beta.3 — 2026-10-23
+
+- Add PayPal funding metadata for npm and Homebridge's verified-plugin donation dialog.
+- Add GitHub Sponsor configuration with the project's PayPal link.
+- Add GitHub, npm and optional PayPal support links to the settings panel and README.
+- Homebridge's native donation dialog remains subject to Homebridge verification.
+
 ## 3.1.0-beta.2 — 2026-10-23
 
 - Fix selector, option, helper text, table and confirmation-dialog colors in Homebridge dark mode.

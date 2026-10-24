@@ -58,3 +58,7 @@ body[class*="config-ui-x-dark-mode"] .ag-panel {
 .ag-panel dialog { color: var(--ag-text); background: var(--ag-field); border-color: var(--ag-border); }
 .ag-panel dialog .btn-outline-secondary { color: var(--ag-text); border-color: var(--ag-border); }
 .ag-panel button:focus-visible, .ag-panel select:focus-visible { outline-color: var(--ag-accent); }
+
+.ag-panel .ag-links { display: flex; flex-wrap: wrap; gap: 1.25rem; margin-top: 1.25rem; font-size: .9rem; }
+.ag-panel .ag-links a { color: var(--ag-link); text-decoration: underline; text-underline-offset: .2em; }
+.ag-panel .ag-links a:focus-visible { outline: 3px solid var(--ag-accent); outline-offset: 3px; }

@@ -1,0 +1,11 @@
+<link rel="stylesheet" href="style.css">
+<section class="ag-panel" aria-labelledby="ag-title">
+  <div class="ag-heading"><div><h2 id="ag-title">Your air, connected</h2><p>Find a monitor, check its connection, and inspect what Homebridge last received.</p></div><button id="discover" class="btn btn-outline-primary" type="button">Find monitors</button></div>
+  <p class="text-muted">Discovery needs the same local network and compatible firmware. You can always enter an IP address below.</p>
+  <div id="status" role="status" aria-live="polite"></div>
+  <div id="found"></div>
+  <div class="ag-tools"><label for="sensor">Configured monitor</label><select id="sensor" class="form-control"></select><button id="probe" class="btn btn-primary" type="button">Test connection</button><button id="diagnostics" class="btn btn-outline-primary" type="button">Refresh diagnostics</button><button id="history" class="btn btn-outline-primary" type="button">View history</button><button id="export" class="btn btn-outline-primary" type="button">Export diagnostics</button></div>
+  <div id="report" aria-live="polite"></div>
+  <dialog id="add-dialog" aria-labelledby="add-title"><h3 id="add-title">Add this monitor?</h3><p id="add-summary"></p><p>This stages the monitor in your settings. Save the configuration and restart Homebridge to connect it.</p><div class="ag-actions"><button id="cancel-add" class="btn btn-outline-secondary" type="button">Cancel</button><button id="confirm-add" class="btn btn-primary" type="button">Add to settings</button></div></dialog>
+</section>
+<script src="app.js"></script>

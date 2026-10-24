@@ -1,38 +1,33 @@
-name: Build and Lint
+name: Build, emulate and verify
 
 on: [push, pull_request]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+permissions:
+  contents: read
 
+jobs:
+  validate:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # the Node.js versions to build on
         node-version: [22.x, 24.x, 26.x]
-
+        homebridge-version: ['1.6.0', '1.11.4', '2.4.0', '2.4.1-beta.13']
     steps:
       - uses: actions/checkout@v4
-
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Lint the project
-        run: npm run lint
-
-      - name: Build the project
-        run: npm run build
-
-      - name: List, audit, fix outdated dependencies and build again
-        run: |
-          npm list --outdated
-          npm audit || true  # ignore failures
-          npm audit fix || true
-          npm list --outdated
-          npm run build
+          cache: npm
+      - name: Install locked development dependencies
+        run: npm ci --ignore-scripts
+      - name: Lint and build
+        run: npm run lint && npm run build
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Validate requested Homebridge runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts homebridge@${{ matrix.homebridge-version }}
+      - name: Exercise emulated devices, Homebridge accessories and settings UI
+        run: npm test
+      - name: Check packaged contents
+        run: npm pack --dry-run --ignore-scripts

@@ -1,0 +1,16 @@
+.ag-panel { border-left: 4px solid #197b88; padding: 0 0 1.2rem 1.2rem; margin-bottom: 1.5rem; color: inherit; overflow-wrap: anywhere; }
+.ag-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.ag-heading h2 { font-size: 1.65rem; font-weight: 600; letter-spacing: -.03em; }
+.ag-panel p { max-width: 68ch; line-height: 1.5; }
+.ag-tools { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin: 1rem 0; }
+.ag-tools select { flex: 1 1 12rem; width: auto; }
+.ag-panel table { width: 100%; font-size: .9rem; }
+.ag-panel th, .ag-panel td { padding: .5rem; border-bottom: 1px solid #82979b70; text-align: left; }
+.ag-panel .ag-values { overflow-x: auto; }
+.ag-panel button:focus-visible, .ag-panel select:focus-visible { outline: 3px solid #197b88; outline-offset: 3px; }
+.ag-panel dialog { max-width: min(32rem, 90vw); color: inherit; background: var(--bs-body-bg, white); border: 1px solid #82979b; border-radius: .5rem; padding: 1.5rem; }
+.ag-panel dialog::backdrop { background: #122f3b80; }
+.ag-actions { display: flex; gap: .75rem; justify-content: end; }
+.ag-device { display: flex; align-items: center; gap: .75rem; padding: .7rem 0; }
+#status:not(:empty) { padding: .7rem; border: 1px solid #82979b70; margin-top: .75rem; }
+@media (max-width: 540px) { .ag-heading { display: block; } .ag-panel { padding-left: .75rem; } }

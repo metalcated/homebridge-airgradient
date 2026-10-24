@@ -3,11 +3,23 @@
 (async () => {
   const el = id => document.getElementById(id);
   let blocks = await homebridge.getPluginConfig();
+  // Homebridge renders the schema form only when a config block exists. Stage an
+  // empty block for first use; the user's Save action remains responsible for persistence.
+  if (!blocks.length) {
+    blocks = [{ platform: 'AirGradientPlatform', sensors: [] }];
+    await homebridge.updatePluginConfig(blocks);
+  }
   let pending;
   let lastDiagnostics;
   const measurementLabels = { pm02: 'PM2.5 (µg/m³)', pm10: 'PM10 (µg/m³)', rco2: 'CO₂ (ppm)',
     atmp: 'Temperature (°C)', rhum: 'Humidity (%)', tvocIndex: 'VOC index (unitless)',
     noxIndex: 'NOx index (unitless)', battPercent: 'Battery (%)' };
+  const availability = () => {
+    const configured = !!el('sensor').value;
+    el('sensor').disabled = !configured;
+    document.querySelectorAll('.ag-tools button').forEach(button => { button.disabled = !configured; });
+    el('empty-state').hidden = configured;
+  };
   const refresh = () => {
     const selection = el('sensor').value;
     el('sensor').replaceChildren();
@@ -18,6 +30,12 @@
       el('sensor').append(option);
     }));
     if ([...el('sensor').options].some(option => option.value === selection)) { el('sensor').value = selection; }
+    if (!el('sensor').options.length) {
+      const option = document.createElement('option');
+      option.value = ''; option.textContent = 'No monitors configured';
+      el('sensor').append(option);
+    }
+    availability();
   };
   const selected = () => {
     if (!el('sensor').value) { throw new Error('Add a monitor in the settings below first.'); }
@@ -30,7 +48,7 @@
     el('status').textContent = 'Working…';
     try { await fn(); }
     catch (error) { el('status').textContent = error.message || 'Request failed. Check the Homebridge log and retry.'; }
-    finally { buttons.forEach(button => { button.disabled = false; }); }
+    finally { buttons.forEach(button => { button.disabled = false; }); availability(); }
   };
   const table = (headers, rows) => {
     const wrap = document.createElement('div'); wrap.className = 'ag-values';

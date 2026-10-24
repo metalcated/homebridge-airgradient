@@ -14,3 +14,47 @@
 .ag-device { display: flex; align-items: center; gap: .75rem; padding: .7rem 0; }
 #status:not(:empty) { padding: .7rem; border: 1px solid #82979b70; margin-top: .75rem; }
 @media (max-width: 540px) { .ag-heading { display: block; } .ag-panel { padding-left: .75rem; } }
+
+/* Homebridge mirrors its dark-mode class onto the custom UI frame's body.
+   Scope control colors here because parent modal-body selectors cannot reach it. */
+.ag-panel {
+  --ag-text: #263b43;
+  --ag-muted: #52656d;
+  --ag-field: #ffffff;
+  --ag-border: #71848c;
+  --ag-accent: #197b88;
+  --ag-link: #145e9c;
+  --ag-primary: #176497;
+  color: var(--ag-text);
+  color-scheme: light;
+}
+body.dark-mode .ag-panel,
+body[class*="config-ui-x-dark-mode"] .ag-panel {
+  --ag-text: #eeeeee;
+  --ag-muted: #bbc6cb;
+  --ag-field: #303438;
+  --ag-border: #82939d;
+  --ag-accent: #70cbd6;
+  --ag-link: #88c7ff;
+  --ag-primary: #176497;
+  color-scheme: dark;
+}
+.ag-panel { border-left-color: var(--ag-accent); }
+.ag-panel .ag-help { color: var(--ag-muted); margin: .6rem 0; }
+.ag-panel .ag-heading p { margin-bottom: .6rem; }
+.ag-panel #sensor, .ag-panel #sensor option {
+  color: var(--ag-text) !important;
+  background-color: var(--ag-field) !important;
+  border-color: var(--ag-border) !important;
+}
+.ag-panel #sensor { min-height: 2.5rem; }
+.ag-panel #sensor:disabled { opacity: .75; cursor: default; }
+.ag-panel .btn-outline-primary { color: var(--ag-link); border-color: var(--ag-link); }
+.ag-panel .btn-outline-primary:hover:not(:disabled) { color: #ffffff; background: var(--ag-primary); }
+.ag-panel .btn-primary { color: #ffffff; background: var(--ag-primary); border-color: var(--ag-primary); }
+.ag-panel button:disabled { opacity: .55; cursor: default; }
+.ag-panel #empty-state { color: var(--ag-muted); margin: .75rem 0 0; }
+.ag-panel table, .ag-panel th, .ag-panel td { color: var(--ag-text); }
+.ag-panel dialog { color: var(--ag-text); background: var(--ag-field); border-color: var(--ag-border); }
+.ag-panel dialog .btn-outline-secondary { color: var(--ag-text); border-color: var(--ag-border); }
+.ag-panel button:focus-visible, .ag-panel select:focus-visible { outline-color: var(--ag-accent); }

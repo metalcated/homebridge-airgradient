@@ -6,16 +6,18 @@ const os = require('node:os');
 const { JSDOM } = require('jsdom');
 const waitFor = async predicate => { const until = Date.now() + 2000; while (!predicate()) { if (Date.now() > until) { throw Error('UI wait timed out'); } await new Promise(r => setTimeout(r, 5)); } };
 
-async function ui() {
+async function ui(initialBlocks = [{ platform: 'AirGradientPlatform', sensors: [{ serialno: 'abc123', host: '192.168.1.2' }] }], dark = false) {
   const dom = new JSDOM(fs.readFileSync(path.join(__dirname, '../homebridge-ui/public/index.html'), 'utf8'), { runScripts: 'outside-only' });
   const { window } = dom; const doc = window.document; const modal = doc.getElementById('add-dialog');
   modal.showModal = () => modal.open = true; modal.close = () => modal.open = false;
-  let blocks = [{ platform: 'AirGradientPlatform', sensors: [{ serialno: 'abc123', host: '192.168.1.2' }] }];
+  let blocks = initialBlocks;
+  if (dark) { doc.body.classList.add('dark-mode'); }
+  let schemaConfigCount = 0;
   const requests = []; const events = {}; let fail = false; let updates = 0;
   window.homebridge = {
     getPluginConfig: async () => JSON.parse(JSON.stringify(blocks)),
     updatePluginConfig: async value => { blocks = value; updates++; },
-    showSchemaForm: () => {}, addEventListener: (name, fn) => events[name] = fn,
+    showSchemaForm: () => { schemaConfigCount = blocks.length; }, addEventListener: (name, fn) => events[name] = fn,
     request: async (route, payload) => {
       requests.push({ route, payload }); if (fail) { throw new Error('Emulated connection failure'); }
       if (route === '/discover') { return [{ serialno: 'new123', host: 'monitor.local', port: 8080, model: '<img src=x onerror=alert(1)>' }]; }
@@ -27,7 +29,7 @@ async function ui() {
   window.eval(fs.readFileSync(path.join(__dirname, '../homebridge-ui/public/app.js'), 'utf8'));
   await waitFor(() => doc.querySelector('#sensor option'));
   const click = async id => { doc.getElementById(id).click(); await waitFor(() => doc.getElementById('status').textContent !== 'Working…'); };
-  return { dom, doc, click, requests, events, modal, get blocks() { return blocks; }, get updates() { return updates; }, set fail(v) { fail = v; } };
+  return { dom, doc, click, requests, events, modal, get blocks() { return blocks; }, get updates() { return updates; }, get schemaConfigCount() { return schemaConfigCount; }, set fail(v) { fail = v; } };
 }
 
 test('settings UI: discover, cancel, approve, duplicate, failure/retry, edit and reopen', async () => {
@@ -127,3 +129,27 @@ test('cancelling while the discovery connection check is pending never stages a 
     assert.equal(h.updates, 0); assert.match(h.doc.getElementById('status').textContent, /cancelled/);
   } finally { h.dom.window.close(); }
 });
+
+
+for (const dark of [false, true]) {
+  test(`first-time setup in ${dark ? 'dark' : 'light'} mode stages the schema and disables unavailable actions`, async () => {
+    const h = await ui([], dark);
+    try {
+      assert.equal(h.updates, 1);
+      assert.deepEqual(JSON.parse(JSON.stringify(h.blocks)), [{ platform: 'AirGradientPlatform', sensors: [] }]);
+      assert.equal(h.schemaConfigCount, 1);
+      assert.equal(h.doc.getElementById('sensor').disabled, true);
+      assert.equal(h.doc.getElementById('sensor').options[0].textContent, 'No monitors configured');
+      assert.equal(h.doc.getElementById('empty-state').hidden, false);
+      for (const id of ['probe', 'diagnostics', 'history', 'export']) { assert.equal(h.doc.getElementById(id).disabled, true); }
+      await h.click('discover'); assert.equal(h.doc.getElementById('probe').disabled, true);
+      h.doc.querySelector('#found button').click(); await h.click('confirm-add');
+      assert.equal(h.doc.getElementById('sensor').disabled, false);
+      assert.equal(h.doc.getElementById('empty-state').hidden, true);
+      assert.equal(h.doc.getElementById('probe').disabled, false);
+      // Removing the final monitor through the schema returns to the empty state.
+      h.events.configChanged({ data: [{ platform: 'AirGradientPlatform', sensors: [] }] });
+      assert.equal(h.doc.getElementById('probe').disabled, true);
+    } finally { h.dom.window.close(); }
+  });
+}

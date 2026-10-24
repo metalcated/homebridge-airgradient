@@ -138,3 +138,19 @@ license, README and all custom UI assets were present in the tarball.
 
 Tarball SHA-256:
 `fd86a7c96b6320390cff202e2f2d645f6e00fc6875bf8ec7aabe1f97e5e4db70`.
+
+## 3.1.0-beta.2 UI correction
+
+The dark-mode and first-time setup correction passed lint and compilation and
+all 28 tests on the locked development runtime. The same 28 tests passed against
+the installed beta.2 tarball on Homebridge 2.4.1-beta.13. The two additional checks
+cover initially empty configuration, staging the schema form, disabled actions,
+discovery enrollment and removal of the final configured monitor in light and
+dark modes. No configuration is automatically saved to disk.
+
+Visual checks used the published Homebridge UI 5.29.0 stylesheet and its real
+`config-ui-x-dark-mode-blue` / `dark-mode` body classes, rather than the earlier
+minimal theme approximation. The selector, helper text and confirmation dialog
+were inspected in dark mode, and the panel was also checked in light mode.
+The parent messaging/configuration data remained emulated; validation on the
+user's actual Homebridge dashboard is still separate.

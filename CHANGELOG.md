@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.0-beta.2 — 2026-10-23
+
+- Fix selector, option, helper text, table and confirmation-dialog colors in Homebridge dark mode.
+- Stage an empty configuration on first setup so Homebridge displays the settings form. Configuration is saved only when the user chooses Save.
+- Show a clear empty-monitor state and disable connection/diagnostic/history/export actions until a monitor is configured.
+- Preserve discovery cancellation and update action availability after schema edits.
+- Add first-time setup regression checks in both light and dark modes.
+
 ## 3.1.0-beta.1 — 2026-10-23
 
 This beta adds broader local-device support, diagnostics and optional controls.

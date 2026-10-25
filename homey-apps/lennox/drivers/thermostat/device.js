@@ -6,12 +6,16 @@ const { validateHost } = require('../../lib/model');
 const CAPABILITY_COMMANDS = {
   thermostat_mode: 'mode',
   target_temperature: 'target',
+  'target_temperature.heat': 'heat',
+  'target_temperature.cool': 'cool',
   heat_target: 'heat',
   cool_target: 'cool',
   fan_mode: 'fan',
 };
+const DIRECTION_MODES = new Set(['thermostat_mode.heat', 'thermostat_mode.cool']);
 const SUPPORTED_CAPABILITIES = new Set([
-  'measure_temperature', 'measure_humidity', 'hvac_state', ...Object.keys(CAPABILITY_COMMANDS),
+  'measure_temperature', 'measure_humidity', 'hvac_state', 'measure_temperature.heat', 'measure_temperature.cool',
+  ...DIRECTION_MODES, ...Object.keys(CAPABILITY_COMMANDS),
 ]);
 
 class LennoxDevice extends Homey.Device {
@@ -21,7 +25,7 @@ class LennoxDevice extends Homey.Device {
     this._updates = Promise.resolve();
     this._commandListeners = new Set();
     this._capabilityOptions = new Map();
-    for (const capability of Object.keys(CAPABILITY_COMMANDS)) this._registerCommandListener(capability);
+    for (const capability of [...Object.keys(CAPABILITY_COMMANDS), ...DIRECTION_MODES]) this._registerCommandListener(capability);
     try {
       await this.setUnavailable('Connecting to the thermostat…');
       await this._subscribe(validateHost(this.getSetting('host')));
@@ -40,8 +44,11 @@ class LennoxDevice extends Homey.Device {
 
   _registerCommandListener(capability) {
     const type = CAPABILITY_COMMANDS[capability];
-    if (!type || !this.hasCapability(capability) || this._commandListeners.has(capability)) return;
-    this.registerCapabilityListener(capability, async (value) => this.writeCommand({ type, value }));
+    if ((!type && !DIRECTION_MODES.has(capability)) || !this.hasCapability(capability) || this._commandListeners.has(capability)) return;
+    this.registerCapabilityListener(capability, async (value) => {
+      if (DIRECTION_MODES.has(capability)) throw new Error('Use the main thermostat mode control.');
+      return this.writeCommand({ type, value });
+    });
     this._commandListeners.add(capability);
   }
 
@@ -56,20 +63,11 @@ class LennoxDevice extends Homey.Device {
       this._registerCommandListener(capability);
     }
 
-    // Partial responses and sensor errors must not remove existing readings or
-    // their history. Only a positively identified alternative setpoint mode
-    // replaces controls that are mutually exclusive with that mode.
-    const obsolete = desired.has('target_temperature') ? ['heat_target', 'cool_target']
-      : desired.has('heat_target') || desired.has('cool_target') ? ['target_temperature'] : [];
-    for (const capability of obsolete) {
-      if (!current()) return;
-      if (this.hasCapability(capability)) await this.removeCapability(capability);
-      this._commandListeners.delete(capability);
-      this._capabilityOptions.delete(capability);
-    }
+    // Keep existing capability IDs, Insight history and Flow references through
+    // setpoint-mode changes and migration to the native thermostat controls.
     for (const [capability, options] of Object.entries(candidate.capabilitiesOptions || {})) {
       if (!current()) return;
-      if (!desired.has(capability) || !this.hasCapability(capability)) continue;
+      if (!SUPPORTED_CAPABILITIES.has(capability) || !this.hasCapability(capability)) continue;
       const serialized = JSON.stringify(options);
       if (this._capabilityOptions.get(capability) === serialized) continue;
       await this.setCapabilityOptions(capability, options);

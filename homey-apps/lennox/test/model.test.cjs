@@ -44,6 +44,10 @@ test('normalization preserves Celsius readings and translates thermostat state w
   assert.deepEqual(normalizeZone(system, zone), {
     measure_temperature: 22, measure_humidity: 43, thermostat_mode: 'auto',
     heat_target: 20, cool_target: 25, hvac_state: 'idle', fan_mode: 'auto',
+    'target_temperature.heat': 20, 'target_temperature.cool': 25,
+    'measure_temperature.heat': 22, 'measure_temperature.cool': 22,
+    'thermostat_mode.heat': 'heat', 'thermostat_mode.cool': 'cool',
+    target_temperature: null,
   });
   zone.systemMode = 'heat';
   zone.tempOperation = 'heating';
@@ -53,6 +57,58 @@ test('normalization preserves Celsius readings and translates thermostat state w
   zone.tempOperation = 'cooling';
   assert.equal(normalizeZone(system, zone).target_temperature, 25);
   assert.equal(normalizeZone(system, zone).hvac_state, 'cooling');
+});
+
+test('native heat/cool groups mirror Celsius readings and enable only the directions allowed by the main mode', () => {
+  const { system, zone } = fixture();
+  for (const [mode, heatMode, coolMode] of [
+    ['heat', 'heat', 'off'], ['cool', 'off', 'cool'], ['heat and cool', 'heat', 'cool'],
+    ['off', 'off', 'off'], ['future-mode', 'off', 'off'],
+  ]) {
+    zone.systemMode = mode;
+    const state = normalizeZone(system, zone);
+    assert.equal(state['target_temperature.heat'], state.heat_target);
+    assert.equal(state['target_temperature.cool'], state.cool_target);
+    assert.equal(state['measure_temperature.heat'], state.measure_temperature);
+    assert.equal(state['measure_temperature.cool'], state.measure_temperature);
+    assert.equal(state['thermostat_mode.heat'], heatMode);
+    assert.equal(state['thermostat_mode.cool'], coolMode);
+  }
+  zone.temperatureC = null;
+  zone.temperature = 77;
+  assert.equal(normalizeZone(system, zone)['measure_temperature.heat'], 25);
+  zone.temperatureStatus = 'not_available';
+  assert.equal('measure_temperature.heat' in normalizeZone(system, zone), false);
+  assert.equal('measure_temperature.cool' in normalizeZone(system, zone), false);
+});
+
+test('explicitly unsupported directions request a UI override while partial metadata preserves existing control options', () => {
+  const { system, zone } = fixture({ systemMode: 'heat', temperatureC: 23, cspC: 22, coolingOption: false });
+  const state = normalizeZone(system, zone);
+  assert.equal(state['thermostat_mode.cool'], 'off');
+  assert.equal(state['measure_temperature.cool'], 23);
+  const device = candidate(system, zone, 'thermostat.local');
+  assert.equal(device.capabilities.includes('target_temperature.cool'), false);
+  assert.equal(device.capabilitiesOptions['target_temperature.cool'].uiComponent, null);
+  assert.equal(device.capabilitiesOptions['target_temperature.heat'].uiComponent, 'thermostat');
+  zone.coolingOption = undefined;
+  const partial = candidate(system, zone, 'thermostat.local');
+  assert.notEqual(partial.capabilitiesOptions['target_temperature.cool']?.uiComponent, null,
+    'Missing equipment metadata alone must not request suppression of a previously supported dial');
+});
+
+test('valid room temperature refreshes native measurement companions even when target data is temporarily absent', () => {
+  const { system, zone } = fixture({ temperatureC: 23, hspC: null, hsp: null, cspC: null, csp: null });
+  const state = normalizeZone(system, zone);
+  assert.equal(state.measure_temperature, 23);
+  assert.equal(state['measure_temperature.heat'], 23);
+  assert.equal(state['measure_temperature.cool'], 23);
+  assert.equal('target_temperature.heat' in state, false);
+  assert.equal('target_temperature.cool' in state, false);
+  zone.systemMode = 'future-mode';
+  const unknown = normalizeZone(system, zone);
+  assert.equal(unknown['thermostat_mode.heat'], 'off');
+  assert.equal(unknown['thermostat_mode.cool'], 'off');
 });
 
 test('normalization retains zero readings, converts Fahrenheit fallback, and excludes invalid sensor values', () => {
@@ -120,10 +176,23 @@ test('automatic dual-setpoint pairing exposes independently bounded heat and coo
   assert.equal(device.capabilities.includes('target_temperature'), false);
   assert.deepEqual(device.capabilitiesOptions.heat_target, { min: 10, max: 32, step: 0.5 });
   assert.deepEqual(device.capabilitiesOptions.cool_target, { min: 15.5, max: 35, step: 0.5 });
+  for (const type of ['heat', 'cool']) {
+    for (const prefix of ['target_temperature', 'measure_temperature', 'thermostat_mode']) {
+      assert.ok(device.capabilities.includes(`${prefix}.${type}`));
+    }
+    assert.equal(device.capabilitiesOptions[`target_temperature.${type}`].uiComponent, 'thermostat');
+    assert.deepEqual(device.capabilitiesOptions[`measure_temperature.${type}`],
+      { uiComponent: null, preventInsights: true, preventTag: true,
+        title: { en: type === 'heat' ? 'Heating temperature' : 'Cooling temperature' } });
+    assert.deepEqual(device.capabilitiesOptions[`thermostat_mode.${type}`],
+      { uiComponent: null, preventInsights: true, preventTag: true });
+  }
+  assert.equal(device.capabilitiesOptions.target_temperature.uiComponent, null, 'The app requests a UI override for a retained scalar capability; native core grouping can still retain its dial');
   zone.coolingOption = false;
   const heatOnly = candidate(system, zone, '192.168.20.40');
   assert.deepEqual(heatOnly.capabilitiesOptions.thermostat_mode.values.map(value => value.id), ['off', 'heat']);
   assert.equal(heatOnly.capabilities.includes('cool_target'), false);
+  assert.equal(heatOnly.capabilities.includes('target_temperature.cool'), false);
 });
 
 test('missing thermostat limits retain readings but do not expose an unbounded write control', () => {
@@ -190,6 +259,18 @@ test('single-setpoint commands use sp exclusively and enforce the shared operati
   assert.ok(device.capabilities.includes('target_temperature'));
   assert.equal(device.capabilities.includes('heat_target'), false);
   assert.equal(device.capabilities.includes('cool_target'), false);
+  assert.equal(device.capabilitiesOptions.target_temperature.uiComponent, 'thermostat');
+  assert.equal(device.capabilitiesOptions['target_temperature.heat'].uiComponent, null);
+  assert.equal(device.capabilitiesOptions['target_temperature.cool'].uiComponent, null);
+  const state = normalizeZone(system, zone);
+  assert.equal(state['thermostat_mode.heat'], 'off');
+  assert.equal(state['thermostat_mode.cool'], 'off');
+  assert.equal(state['measure_temperature.heat'], state.measure_temperature);
+  assert.equal(state['measure_temperature.cool'], state.measure_temperature);
+  assert.equal('target_temperature.heat' in state, false, 'SSP reports must not overwrite an old independent target');
+  assert.equal('target_temperature.cool' in state, false);
+  assert.equal(device.capabilities.includes('measure_temperature.heat'), false, 'A new SSP device must not gain unused native companion groups');
+  assert.equal(device.capabilities.includes('measure_temperature.cool'), false);
 });
 
 test('Away and thermostat-denied local access reject writes without targeting a shared schedule', () => {

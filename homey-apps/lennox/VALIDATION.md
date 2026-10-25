@@ -1,10 +1,10 @@
-# Lennox 0.1.2 validation
+# Lennox 0.1.3 validation
 
 Validated on October 24, 2026. This is a private Homey test release. App Store publication and physical thermostat acceptance are separate steps.
 
 ## Completed locally in isolated containers
 
-- **106 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools, when the temporary reviewed vendor asset is supplied for the optional web-patch integration check. CI runs 105 tests and skips that single optional check because no vendor bundle is committed.
+- **118 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools, when the temporary reviewed vendor asset is supplied for the optional renderer integration checks. CI runs 114 tests and skips four optional checks because no vendor bundle is committed.
 - JavaScript syntax and JSON validation pass.
 - Official Homey CLI **4.6.1** debug validation and app build pass.
 - The actual installer Dockerfile builds successfully and repeats syntax checks, all tests, Homey validation, and build.
@@ -39,8 +39,8 @@ The corrected small archive still received HTTP 400 over the cloud relay. The lo
 
 ## Not yet verified live
 
-- Rendered Homey thermostat controls, Insights, Flow execution, or lifecycle teardown/restart on that server. Mocked SDK tests do not prove those paths.
-- Homey UI completion of physical-device pairing, ongoing physical-device recovery, simultaneous-client behavior, or a real heating/cooling/fan change. No thermostat was added to Homey by the installer.
+- Insights history rendering, Flow execution, full Homey service restart, ongoing physical-device recovery, simultaneous-client behavior, or a real heating/cooling/fan change. The app installer itself does not pair devices or send thermostat commands.
+- Physical control writes and rollback remain acceptance steps. Emulated writes and the read-only browser checks below do not prove physical actuation.
 
 ## S40 pairing correction and physical read-only verification
 
@@ -50,7 +50,7 @@ Version 0.1.1 adds the missing identity decoder, settles the usable device catal
 
 The corrected complete backend pairing path was then run against the actual thermostat with `publishMessage` replaced by a throwing guard. It returned the stable controller identity and zone 0 in **6.042 seconds**, including temperature, humidity, supported modes, fan mode, and independently bounded heat/cool targets. The candidate was read-only; the diagnostic connection closed afterward. No thermostat command or controller reset was sent. Live serials and full device configuration were not copied into the repository.
 
-This validates physical read-only discovery by the same backend from the Homey host. Subsequent actual Homey UI discovery is recorded below; adding the device and actual control writes remain untested.
+This validates physical read-only discovery by the same backend from the Homey host. Subsequent actual Homey UI discovery and the later user-paired device's dial verification are recorded below; actual control writes remain untested by this validation.
 
 Version 0.1.1 was then installed on the selected Homey through the verified local tunnel. The installer independently confirmed the expected version reached `running`. Existing Homey settings were preserved, and the user-controlled Homebridge Lennox child bridge remained stopped for the trial.
 
@@ -64,7 +64,7 @@ In the user's Homey web interface, the old Lennox wizard was closed, the page re
 
 Review of the deployed view loader also showed that repair pages are served from `drivers/thermostat/repair/`, independently from `pair/`. Version 0.1.2 adds the missing repair entry page. Tests load the real manifest-selected paths, cover repair failure/retry/reopen, require equivalent pair and repair forms, and inspect the actual upload archive for both pages. Existing pairing initialization remains unchanged: the deployed pairing SDK supplies `window.Homey` before starting views.
 
-Version 0.1.2 was installed through the verified localhost tunnel and independently reported as running on the selected Homey. Actual repair of a paired physical device remains unverified because the test stopped before adding a thermostat.
+Version 0.1.2 was installed through the verified localhost tunnel and independently reported as running on the selected Homey. Actual repair of a paired physical device remains unverified because this pairing test stopped before adding a thermostat.
 
 The missing brand glyph was traced to the deployed web bundle's brand picker, which constructs only `https://icons-cdn.athom.com/<iconObj.id>.svg` and ignores the private app's local `iconObj.url`. The exact CDN URL returned HTTP 403, while the Homey's app and driver icon URLs both returned HTTP 200 with the correct SVG. The driver tile uses a loader with a local fallback and renders successfully. A full browser refresh did not fix the brand glyph. This project does not modify Homey's own web bundle or claim that changing SVG geometry fixes that upstream limitation.
 
@@ -72,7 +72,23 @@ The missing brand glyph was traced to the deployed web bundle's brand picker, wh
 
 After explicit user approval, a separate, guarded workaround was applied to the reviewed Homey 13.5.3 web bundle. It reuses Homey's existing local-capable icon loader without changing the Lennox runtime app or thermostat commands. The live apply, exact rollback, and reapply all passed file and HTTP checksum verification without a Homey restart. In the actual browser, the previously blank Lennox brand/header icons and selected thermostat tile displayed correctly; public app icons and device readings remained visible. Pairing opened normally and its test session was closed cleanly.
 
-The expanded Node 22 and Node 24 suites each pass **106 tests**, including integration against the exact temporary vendor bundle. CI without that asset runs 105 tests and skips only the optional vendor-bundle integration. No vendor bundle is committed. Existing Homey validation/build/packaging checks also pass, and all optional helper/test/docs files remain outside the installed app archive. See [Homey web icon deployment and rollback](docs/HOMEY-WEB-ICONS.md) for the approved scope, backup location, exact rollback command, and update limitations.
+At the time of the icon workaround, the Node 22 and Node 24 suites each passed **106 tests**, including integration against the exact temporary vendor bundle. The subsequent dial correction expands that coverage below. No vendor bundle is committed. Existing Homey validation/build/packaging checks also pass, and all optional helper/test/docs files remain outside the installed app archive. See [Homey web icon deployment and rollback](docs/HOMEY-WEB-ICONS.md) for the approved scope, backup location, exact rollback command, and update limitations.
+
+## Native temperature dial correction
+
+The Homey 13.5.3 thermostat renderer was inspected directly and exercised in isolation. It hard-codes native `target_temperature`, `measure_temperature`, and `thermostat_mode` names with matching dot suffixes. The old `heat_target`/`cool_target` custom capabilities created a thermostat component but did not satisfy that lookup, producing a null target, a displayed 0.0-degree value, and no valid write capability.
+
+Version 0.1.3 adds native `.heat`/`.cool` target controls and matching measurement/mode companions. Each native writer maps to the existing guarded heat/cool command path. The original custom capabilities, Flow actions, Insight histories, stable device identity, and settings remain. Single/dual transitions retain capability data and request component visibility changes. Explicitly unsupported directions are neutralized; incomplete metadata preserves existing controls.
+
+The server's native thermostat-grouping pass runs before component option overrides: a matching target/measurement pair is always included. Consequently, the expanded tile lists both native targets and their current-temperature companions, and previously added native dials may remain visible after equipment reconfiguration despite `uiComponent: null`. Tests distinguish the requested options from this actual grouping behavior. Unsupported writes still reject through the existing planner, and retained direction modes explicitly become Off for confirmed single-setpoint equipment. No native capability history or Flow reference is deleted to work around the vendor grouping.
+
+The actual renderer tests reproduce the old failure and verify correct target/current-temperature/mode lookup, units, limits, write IDs, single-target behavior, and 50 mode/temperature/direction color cases. The wire emulator now tests complete heating and cooling writes, preserving the opposite target, other zone, humidity, mode, and unrelated fields. Retained independent controls reject single-setpoint or unsupported-direction commands with zero publish requests. Existing read-only, schedule, permission, bounds, deadband, failed-write, and readback protections remain covered. All 118 tests pass in both supported Node versions with the temporary reviewed bundle.
+
+Homey's blank Status Indicator selector is separate: the deployed settings screen and official capability documentation explicitly exclude thermostat devices from custom indicator selection. The native tile uses the base thermostat group and cannot represent a dual-auto band fully through the normal app SDK. The app does not fabricate a scalar auto target or add broad Homey API permissions. Dial colors represent temperature demand; `hvac_state` continues reporting actual device activity. At 75°F with a 72°F heat target, neutral coloring is expected.
+
+Version 0.1.3 was then installed on the selected Homey and independently reported `running`, enabled, and not crashed. The existing user-paired Durham zone remained available with the same device ID, name, existing capability IDs, write preference, heat/cool targets, HVAC mode, and fan mode. Canonical before/after hashes of the existing normal and advanced Flow definitions matched (both inventories contained zero user Flows). Capability IDs were retained rather than removed; historical Insight records were not independently queried.
+
+In the actual Homey web interface after a full refresh, Heating target displayed **72°F**, Cooling target displayed **76°F**, and both displayed **75°F** current temperature. Switching the target-view selector in both directions worked without sending a thermostat command. The real mode remained Heat and Operating state remained Idle, so neutral coloring was correct. Active orange/blue demand colors and command writes were verified against the reviewed renderer and emulator, not by changing the physical thermostat. The existing approved icon workaround retained the same served checksum and the Homey container did not restart.
 
 ## Live acceptance and rollback
 

@@ -26,8 +26,24 @@ function normalizeZone(system, zone) {
   const heat = celsius(zone.hspC, zone.hsp), cool = celsius(zone.cspC, zone.csp), single = celsius(zone.spC, zone.sp);
   if (!system.singleSetpointMode && zone.heatingOption === true && finite(heat)) state.heat_target = heat;
   if (!system.singleSetpointMode && zone.coolingOption === true && finite(cool)) state.cool_target = cool;
+  if ('measure_temperature' in state) {
+    for (const type of ['heat', 'cool']) state[`measure_temperature.${type}`] = state.measure_temperature;
+  }
+  if (!system.singleSetpointMode) {
+    for (const type of ['heat', 'cool']) {
+      if (type + '_target' in state) state[`target_temperature.${type}`] = state[type + '_target'];
+      // Homey's native thermostat groups read matching mode/temperature suffixes.
+      // These hidden modes describe enabled directions, not actual HVAC demand.
+      const supported = zone[type === 'heat' ? 'heatingOption' : 'coolingOption'];
+      state[`thermostat_mode.${type}`] = supported !== false && (state.thermostat_mode === type || state.thermostat_mode === 'auto') ? type : 'off';
+    }
+  } else if (system.singleSetpointMode === true) {
+    state['thermostat_mode.heat'] = 'off';
+    state['thermostat_mode.cool'] = 'off';
+  }
   const target = system.singleSetpointMode ? single : zone.systemMode === 'heat' ? heat : zone.systemMode === 'cool' ? cool : undefined;
   if (finite(target)) state.target_temperature = target;
+  else if (system.singleSetpointMode === false && ['off', 'heat and cool'].includes(zone.systemMode)) state.target_temperature = null;
   state.hvac_state = { heating: 'heating', cooling: 'cooling', off: 'idle', idle: 'idle', defrost: 'defrost' }[zone.tempOperation] || 'unknown';
   if (FAN_MODES.includes(zone.fanMode)) state.fan_mode = zone.fanMode;
   return state;
@@ -49,6 +65,9 @@ function candidate(system, zone, host) {
   if ('measure_humidity' in state) capabilities.push('measure_humidity');
   if ('fan_mode' in state) capabilities.push('fan_mode');
   const capabilitiesOptions = {};
+  if (system.singleSetpointMode === true) {
+    for (const type of ['heat', 'cool']) capabilitiesOptions[`target_temperature.${type}`] = { uiComponent: null };
+  } else if (system.singleSetpointMode === false) capabilitiesOptions.target_temperature = { uiComponent: null };
   const modes = ['off'];
   if (zone.heatingOption === true) modes.push('heat');
   if (zone.coolingOption === true) modes.push('cool');
@@ -57,15 +76,31 @@ function candidate(system, zone, host) {
     capabilitiesOptions.thermostat_mode = { values: modes.map(id => ({ id, title: { en: id === 'auto' ? 'Automatic' : id[0].toUpperCase() + id.slice(1) } })) };
   }
   for (const type of ['heat', 'cool']) {
+    if (zone[type === 'heat' ? 'heatingOption' : 'coolingOption'] === false) {
+      capabilitiesOptions[`target_temperature.${type}`] = { uiComponent: null };
+    }
     if (!(type + '_target' in state)) continue;
-    try { capabilitiesOptions[type + '_target'] = limits(zone, type); capabilities.push(type + '_target'); } catch { /* readings remain usable before limits arrive */ }
+    try {
+      const range = limits(zone, type);
+      capabilitiesOptions[type + '_target'] = range;
+      capabilities.push(type + '_target', `target_temperature.${type}`, `measure_temperature.${type}`, `thermostat_mode.${type}`);
+      capabilitiesOptions[`target_temperature.${type}`] = {
+        ...range, title: { en: type === 'heat' ? 'Heating target' : 'Cooling target' },
+        uiComponent: 'thermostat', preventInsights: true, preventTag: true,
+      };
+      const helperOptions = { uiComponent: null, preventInsights: true, preventTag: true };
+      capabilitiesOptions[`measure_temperature.${type}`] = {
+        ...helperOptions, title: { en: type === 'heat' ? 'Heating temperature' : 'Cooling temperature' },
+      };
+      capabilitiesOptions[`thermostat_mode.${type}`] = helperOptions;
+    } catch { /* readings remain usable before limits arrive */ }
   }
   // A single thermostat dial is ambiguous for a dual-setpoint system in auto.
   // Show the independent heat/cool controls instead of choosing one silently.
   if (system.singleSetpointMode && finite(state.target_temperature)) {
     try {
       const heat = limits(zone, 'heat'), cool = limits(zone, 'cool');
-      capabilitiesOptions.target_temperature = { min: Math.max(heat.min, cool.min), max: Math.min(heat.max, cool.max), step: 0.5 };
+      capabilitiesOptions.target_temperature = { min: Math.max(heat.min, cool.min), max: Math.min(heat.max, cool.max), step: 0.5, uiComponent: 'thermostat' };
       if (capabilitiesOptions.target_temperature.min < capabilitiesOptions.target_temperature.max) capabilities.push('target_temperature');
     } catch { /* no write control until known limits */ }
   }

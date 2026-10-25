@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { ManagedS30API } = require('../lib/transport');
+const { SessionManager } = require('../lib/session');
 const { createEmulator } = require('./emulator.cjs');
 
 async function fixture(t, options = {}) {
@@ -106,6 +107,54 @@ test('real inherited mode, fan, setpoint, away and schedule commands receive dev
   assert.equal(zone.scheduleId, 0);
   await assert.rejects(zone.setHVACMode('invalid-mode'), /Invalid HVAC mode/);
   await assert.rejects(zone.setFanMode('invalid-fan'), /Invalid fan mode/);
+});
+
+test('a confirmed cooling command changes only its Celsius/Fahrenheit setpoint and preserves heat, mode, humidity and other zones', async t => {
+  const { api, emulator } = await fixture(t);
+  const manager = new SessionManager({ clientFactory: () => api, pollMs: 5, drainMs: 5,
+    catalogSettleMs: 10, connectTimeoutMs: 1000, confirmTimeoutMs: 200 });
+  t.after(() => manager.close());
+  const originalPeriod = structuredClone(emulator.state.zones[0].status.period);
+  const originalOtherZone = structuredClone(emulator.state.zones[1]);
+  const originalSystem = structuredClone(emulator.state.system);
+  const state = await manager.command(emulator.host, 'EMU-S40-001', 0, { type: 'cool', value: 24.5 }, false);
+  assert.equal(state.cool_target, 24.5);
+  assert.equal(state['target_temperature.cool'], 24.5);
+  assert.equal(state.heat_target, 20);
+  assert.equal(state.thermostat_mode, 'auto');
+  const writes = emulator.events.filter(event => event.route === 'publish');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].data.Data.schedules[0].id, 16);
+  assert.deepEqual(writes[0].data.Data.schedules[0].schedule.periods[0].period, { cspC: 24.5, csp: 76 });
+  assert.deepEqual(emulator.state.zones[0].status.period, { ...originalPeriod, cspC: 24.5, csp: 76 });
+  assert.deepEqual(emulator.state.zones[1], originalOtherZone);
+  assert.deepEqual(emulator.state.system, originalSystem);
+  assert.equal(emulator.events.some(event => event.data?.Data?.resetLcc), false);
+});
+
+test('retained independent controls cannot actuate a single-setpoint or explicitly unsupported direction', async () => {
+  for (const scenario of [
+    { single: true, type: 'heat', error: /single temperature target/ },
+    { single: true, type: 'cool', error: /single temperature target/ },
+    { single: false, type: 'cool', disabled: true, error: /not supported/ },
+  ]) {
+    const emulator = await createEmulator({ singleSetpoint: scenario.single });
+    if (scenario.disabled) {
+      emulator.state.zones[0].config.coolingOption = false;
+      emulator.state.zones[0].status.period.systemMode = 'heat';
+    }
+    const original = structuredClone(emulator.state);
+    const manager = new SessionManager({ pollMs: 5, drainMs: 5, catalogSettleMs: 10,
+      connectTimeoutMs: 1000, confirmTimeoutMs: 200,
+      clientFactory: () => new ManagedS30API({ host: emulator.host, port: emulator.port,
+        protocol: emulator.protocol, requestTimeoutMs: 500 }) });
+    try {
+      await assert.rejects(manager.command(emulator.host, 'EMU-S40-001', 0,
+        { type: scenario.type, value: scenario.type === 'heat' ? 21 : 24 }, false), scenario.error);
+      assert.equal(emulator.events.filter(event => event.route === 'publish').length, 0);
+      assert.deepEqual(emulator.state, original);
+    } finally { await manager.close(); await emulator.close(); }
+  }
 });
 
 test('single setpoint and central zoning are parsed from equipment and system data', async t => {

@@ -1,12 +1,12 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.2** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.3** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
 - Manual IP/hostname pairing with zone selection and stable serial/zone identities.
 - Temperature, humidity when reported, operating state, supported HVAC modes, and fan modes.
-- Separate heating and cooling targets for dual-setpoint systems; one target for single-setpoint systems. Celsius is used internally; Homey presents supported thermostat values using its configured units. Custom Flow temperature arguments are explicitly Celsius.
+- Native Heating target and Cooling target dials for dual-setpoint systems; one target for single-setpoint systems. Celsius is used internally; Homey presents supported thermostat values using its configured units. Custom Flow temperature arguments are explicitly Celsius.
 - Heating, cooling, fan actions and operating-state conditions in Flow. Native capabilities also provide Homey's normal cards and Insights where supported.
 - Read-only mode enabled for each new device. Disable it in that device's advanced settings to permit commands.
 - A shared connection for all zones on the same address, bounded requests, reconnect attempts, stale-zone detection, and confirmation of writes through fresh reported state.
@@ -53,6 +53,16 @@ If Homey says **Another pair session is already active**, close the old Lennox p
 On Homey 13.5.3, a privately installed app can show a blank brand circle even when its local SVG is present: the web brand picker requests only Athom's public icon CDN and does not use the app's local icon URL. The thermostat tile does use the local fallback. Refreshing may clear a cached request, but cannot put a private icon on that CDN. This is a Homey web interface limitation; changing thermostat settings or reinstalling the app does not address it. An optional, explicitly approved local workaround is documented in [Homey web icons](docs/HOMEY-WEB-ICONS.md). It changes the reviewed Homey web bundle separately from this app and is not applied by the app installer.
 
 A static DHCP lease is recommended. Use Homey's Repair action to update an address; pairing identity is based on the serial number and zone, so an IP change does not create a different thermostat.
+
+## Temperature dials and status indicators
+
+Version 0.1.3 corrects the native thermostat control names required by Homey. Existing paired devices gain Heating target and Cooling target choices automatically; existing custom capability IDs remain for Flow actions and Insights history. Reopen the device control after the app update. A single-setpoint thermostat continues to use its normal single target.
+
+The dials use the reported limits and current temperature. Heating colors appear when the enabled heating target is above the measured temperature; cooling colors appear when enabled cooling is below the measured temperature. Both remain neutral within an automatic heat/cool band. The separate **Operating state** reading reports the thermostat's actual activity; Homey computes dial colors from temperature demand.
+
+Homey intentionally disables the **Status Indicator** selector for thermostat-class devices, although its current web interface still renders a blank selector. This is a [documented Homey restriction](https://apps.developer.homey.app/the-basics/devices/capabilities#device-indicators-and-custom-capabilities). The tile uses Homey's automatic thermostat indicator. Homey's default tile cannot fully represent both independent targets in automatic mode; the detailed controls and Operating state reading remain the useful views. This app does not invent one scalar target for an automatic heat/cool band or request broad control of other Homey devices to override that restriction.
+
+Homey also lists a current-temperature companion beside each native target on the expanded device tile. Its native grouping takes precedence over component visibility options. If equipment is reconfigured between single and dual targets, previously added native dials can remain visible; their existing command guards reject unsupported writes, and obsolete direction contexts are neutralized. Capability IDs are preserved to avoid deleting historical records or Flow references.
 
 ## Control behavior and limits
 

@@ -1,6 +1,6 @@
 # Optional Homey 13.5.3 web icon workaround
 
-This is an explicitly approved, local workaround for Homey Self-Hosted Server's web interface. It is separate from the Lennox app, does not alter thermostat communication, and is excluded from the installed Homey app archive. The Lennox app remains version 0.1.2.
+This is an explicitly approved, local workaround for Homey Self-Hosted Server's web interface. It is separate from the Lennox app, does not alter thermostat communication, and is excluded from the installed Homey app archive. This web patch does not change the Lennox app version; it was first applied while that app was version 0.1.2.
 
 ## Problem and scope
 

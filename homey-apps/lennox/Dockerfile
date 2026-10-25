@@ -3,6 +3,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY . .
-RUN npm run lint && npm test && npm run validate && npm run build
+RUN npm run lint && npm test && npm run validate && npm run build && npm run check:package
 ENV HOMEY_HOME=/auth
-CMD ["sh", "-c", "./node_modules/.bin/homey select && ./node_modules/.bin/homey app install --skip-build"]
+CMD ["sh", "-c", "./node_modules/.bin/homey select && node scripts/install-app.cjs"]

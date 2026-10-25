@@ -28,6 +28,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=moderate
       - run: npm run validate
       - run: npm run build
+      - run: npm run check:package
   runtime:
     runs-on: ubuntu-latest
     defaults:

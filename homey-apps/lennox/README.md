@@ -24,6 +24,16 @@ bash homey-apps/lennox/scripts/install.sh
 
 Or run that script using its absolute path from any directory. It builds and tests a container, asks you to select your Homey, and persistently installs the app using the official Homey CLI. It does not use `--clean` or remove existing app data. Your Homey account may need to authorize the CLI. Open the displayed link and, if required, paste its code **into your terminal only**. Credentials are stored in a dedicated Docker volume outside this repository.
 
+For the installation on `iot-mgmt` reached through `foreman`, use this Mac command:
+
+```sh
+bash homey-apps/lennox/scripts/install.sh --via-foreman
+```
+
+It opens a temporary localhost-only SSH tunnel, verifies that the endpoint belongs to your selected Homey, and uploads over that route. The tunnel closes when installation finishes; the installed app does not depend on it. `HOMEY_SSH_JUMP`, `HOMEY_SSH_TARGET`, and `HOMEY_TUNNEL_PORT` can override the default jump host, destination, and local port. This Mac workflow uses Docker Desktop's `host.docker.internal` address. No SSH or Homey service configuration is changed.
+
+The installer preprocesses production dependencies before packing and checks the installed app reaches `running`. CLI 4.6.1's `--skip-build` archives the source tree, so it is deliberately not used. Its upload error handler can exit zero; this installer calls the same SDK upload endpoint directly and propagates errors instead. A real packaging regression check consumes the upload archive and rejects leaked development tools or an incorrectly sized bundle.
+
 The local Homey web username/password is not the CLI's account authentication. No passwords, tokens, or pairing codes belong in app source or chat.
 
 ## Pair your thermostat

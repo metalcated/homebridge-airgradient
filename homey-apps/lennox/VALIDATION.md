@@ -4,7 +4,7 @@ Validated on October 24, 2026. This is a private Homey test release. App Store p
 
 ## Completed locally in isolated containers
 
-- **95 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools.
+- **106 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools, when the temporary reviewed vendor asset is supplied for the optional web-patch integration check. CI runs 105 tests and skips that single optional check because no vendor bundle is committed.
 - JavaScript syntax and JSON validation pass.
 - Official Homey CLI **4.6.1** debug validation and app build pass.
 - The actual installer Dockerfile builds successfully and repeats syntax checks, all tests, Homey validation, and build.
@@ -67,6 +67,12 @@ Review of the deployed view loader also showed that repair pages are served from
 Version 0.1.2 was installed through the verified localhost tunnel and independently reported as running on the selected Homey. Actual repair of a paired physical device remains unverified because the test stopped before adding a thermostat.
 
 The missing brand glyph was traced to the deployed web bundle's brand picker, which constructs only `https://icons-cdn.athom.com/<iconObj.id>.svg` and ignores the private app's local `iconObj.url`. The exact CDN URL returned HTTP 403, while the Homey's app and driver icon URLs both returned HTTP 200 with the correct SVG. The driver tile uses a loader with a local fallback and renders successfully. A full browser refresh did not fix the brand glyph. This project does not modify Homey's own web bundle or claim that changing SVG geometry fixes that upstream limitation.
+
+## Approved Homey web icon workaround
+
+After explicit user approval, a separate, guarded workaround was applied to the reviewed Homey 13.5.3 web bundle. It reuses Homey's existing local-capable icon loader without changing the Lennox runtime app or thermostat commands. The live apply, exact rollback, and reapply all passed file and HTTP checksum verification without a Homey restart. In the actual browser, the previously blank Lennox brand/header icons and selected thermostat tile displayed correctly; public app icons and device readings remained visible. Pairing opened normally and its test session was closed cleanly.
+
+The expanded Node 22 and Node 24 suites each pass **106 tests**, including integration against the exact temporary vendor bundle. CI without that asset runs 105 tests and skips only the optional vendor-bundle integration. No vendor bundle is committed. Existing Homey validation/build/packaging checks also pass, and all optional helper/test/docs files remain outside the installed app archive. See [Homey web icon deployment and rollback](docs/HOMEY-WEB-ICONS.md) for the approved scope, backup location, exact rollback command, and update limitations.
 
 ## Live acceptance and rollback
 

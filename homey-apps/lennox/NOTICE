@@ -10,5 +10,10 @@ The upstream published archive does not include a standalone LICENSE file;
 its declared license is recorded here without inventing an upstream notice.
 The dependency and its package metadata are included in the installed bundle.
 
+Controller identity feature mappings follow the protocol behavior in Pete
+Rager's original Python client: https://github.com/PeteRager/lennoxs30api
+The identity decoder is independently implemented here; no live identifiers or
+upstream fixture files are included.
+
 Lennox and iComfort are trademarks of their respective owners. This project is
 an independent community integration and is not endorsed by Lennox or Athom.

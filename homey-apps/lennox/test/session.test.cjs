@@ -143,7 +143,7 @@ test('pairing lists active zones with stable identities and releases the tempora
   } finally { await manager.close(); }
 });
 
-test('pairing drains split reading/configuration messages through an idle response before listing zones', async () => {
+test('pairing waits for split reading/configuration messages before listing zones', async () => {
   let client;
   const { manager } = setup({ managerOptions: { clientFactory: () => {
     client = new FakeClient();
@@ -162,8 +162,84 @@ test('pairing drains split reading/configuration messages through an idle respon
     const devices = await manager.inspect(HOST);
     assert.deepEqual(devices.map(device => device.data.id), [`${SERIAL}:0`, `${SERIAL}:1`]);
     assert.ok(devices.every(device => device.capabilities.includes('heat_target') && device.capabilities.includes('cool_target')));
-    assert.ok(client.events.filter(event => event.name === 'poll').length >= 3, 'Both data messages and the idle response must be consumed');
+    assert.ok(client.events.filter(event => event.name === 'poll').length >= 3, 'Both data messages must be consumed before the catalog settles');
     assert.equal(client.pending.length, 0);
+    assert.equal(client.closed, true);
+  } finally { await manager.close(); }
+});
+
+test('complete thermostat metadata can finish pairing while unsolicited messages keep every poll nonempty', async () => {
+  let client;
+  const { manager } = setup({ managerOptions: { connectTimeoutMs: 3000, clientFactory: () => {
+    client = new FakeClient();
+    client.system.numberOfZones = 2;
+    const messagePump = client.messagePump.bind(client);
+    client.messagePump = async () => {
+      const updated = await messagePump();
+      if (!updated) client.revision++;
+      // Real controllers can continuously report other system/equipment state;
+      // an empty HTTP 204 is not guaranteed after complete zone data arrives.
+      return true;
+    };
+    return client;
+  } } });
+  try {
+    const devices = await manager.inspect(HOST);
+    assert.deepEqual(devices.map(device => device.data.id), [`${SERIAL}:0`, `${SERIAL}:1`]);
+    assert.ok(devices.every(device => device.capabilities.includes('heat_target') && device.capabilities.includes('cool_target')));
+    assert.equal(publishes(client).length, 0);
+    assert.equal(client.closed, true);
+  } finally { await manager.close(); }
+});
+
+test('a late zone extends catalog settling while unrelated traffic continues without idle responses', async () => {
+  let client, polls = 0;
+  const { manager } = setup({ managerOptions: { connectTimeoutMs: 100, catalogSettleMs: 20, clientFactory: () => {
+    client = new FakeClient();
+    client.system.zones = [zone(0)];
+    const messagePump = client.messagePump.bind(client);
+    client.messagePump = async () => {
+      await messagePump();
+      polls++;
+      if (polls === 3) {
+        client.system.zones.push(zone(1));
+        client.zoneRevisions.set(1, (client.zoneRevisions.get(1) ?? 0) + 1);
+      }
+      client.revision++;
+      return true;
+    };
+    return client;
+  } } });
+  try {
+    const devices = await manager.inspect(HOST);
+    assert.deepEqual(devices.map(device => device.data.id), [`${SERIAL}:0`, `${SERIAL}:1`]);
+    assert.ok(polls >= 7, 'The late zone must restart the bounded catalog settling window');
+    assert.equal(client.closed, true);
+    assert.equal(publishes(client).length, 0);
+  } finally { await manager.close(); }
+});
+
+test('pairing drains a large initial message backlog before the zone catalog without spending the deadline on idle delays', async () => {
+  let client;
+  const { manager } = setup({ managerOptions: { pollMs: 1000, connectTimeoutMs: 30000,
+    catalogSettleMs: 1000, clientFactory: () => {
+      client = new FakeClient();
+      client.system.zones = [];
+      client.subscribe = async () => client.operation('subscribe', () => {
+        // A real subscription can queue many system/equipment fragments before
+        // the zone catalog. These successful responses should drain promptly.
+        client.pending.push(...Array.from({ length: 70 }, () => ({ zones: [] })));
+        client.pending.push({ zones: [0, 1], apply: () => { client.system.zones = [zone(0), zone(1)]; } });
+      });
+      return client;
+    } } });
+  try {
+    const devices = await manager.inspect(HOST);
+    assert.deepEqual(devices.map(device => device.data.id), [`${SERIAL}:0`, `${SERIAL}:1`]);
+    assert.equal(client.pending.length, 0);
+    assert.ok(client.events.filter(event => event.name === 'poll').length >= 72,
+      'The initial fragments, zone catalog, and settling response must be consumed within the deadline');
+    assert.equal(publishes(client).length, 0);
     assert.equal(client.closed, true);
   } finally { await manager.close(); }
 });
@@ -416,6 +492,48 @@ test('the real pinned parser pairs emulator zones and confirms a partial setpoin
   } finally { await manager.close(); await emulator.close(); }
 });
 
+test('an S40 controller identified only by equipment features pairs during continuous traffic and excludes unused zones', async () => {
+  const emulator = await createEmulator({ model: 'S40', zones: 4, central: true });
+  const state = emulator.state;
+  delete state.system.registration.serialNumber;
+  state.devices = [];
+  state.system.config.centralMode = true;
+  state.zones[0].status.temperatureC = 24.5;
+  state.zones[0].status.temperature = 76.1;
+  for (const zone of state.zones.slice(1)) {
+    zone.config.heatingOption = null;
+    zone.config.coolingOption = null;
+    zone.status.temperatureC = null;
+    zone.status.temperature = null;
+    zone.status.temperatureStatus = 'not_available';
+    zone.status.humidity = null;
+    zone.status.humidityStatus = 'not_available';
+  }
+  state.equipments[0].equipment.features = [
+    { id: 0, feature: { fid: 32773, name: 'Product Type', values: [{ id: 0, value: 'S40' }] } },
+    { id: 1, feature: { fid: 15, name: 'Equipment Type Name', values: [{ id: 0, value: 'System' }] } },
+    { id: 2, feature: { fid: 9, name: 'Control Serial Number', values: [{ id: 0, value: 'EMU-CONTROLLER-S40' }] } },
+  ];
+  // Every retrieval deliberately remains nonempty, reproducing the observed
+  // S40 connection instead of requiring an idle response after subscription.
+  emulator.setBehavior('retrieve', { status: 200, body: { messages: [
+    { MessageID: '1', SenderID: 'LCC', MessageType: 'Notification', Data: state },
+  ] } });
+  const manager = wireManager(emulator, { connectTimeoutMs: 300, catalogSettleMs: 50 });
+  try {
+    const devices = await manager.inspect(emulator.host);
+    assert.equal(devices.length, 1);
+    assert.deepEqual(devices[0].data, { id: 'EMU-CONTROLLER-S40:0' });
+    assert.deepEqual(devices[0].store, { serial: 'EMU-CONTROLLER-S40', zoneId: 0 });
+    assert.equal(devices[0].settings.read_only, true);
+    assert.ok(devices[0].capabilities.includes('heat_target'));
+    assert.ok(devices[0].capabilities.includes('cool_target'));
+    assert.ok(emulator.events.filter(event => event.route === 'retrieve').length > 1);
+    assert.equal(emulator.events.filter(event => event.route === 'publish').length, 0);
+    assert.equal(manager.sessions.size, 0);
+  } finally { await manager.close(); await emulator.close(); }
+});
+
 test('the real protocol session rejects a successful ACK when the thermostat keeps reporting the old value', async () => {
   const emulator = await createEmulator({ ignoreCommands: true });
   const manager = wireManager(emulator, { confirmTimeoutMs: 40 });
@@ -430,7 +548,7 @@ test('a reachable controller that never reports its identity cannot be paired or
   const emulator = await createEmulator({ noInitialData: true });
   const manager = wireManager(emulator, { connectTimeoutMs: 35 });
   try {
-    await assert.rejects(manager.inspect(emulator.host), /identity and zone readings/);
+    await assert.rejects(manager.inspect(emulator.host), /controller identity/);
     assert.equal(emulator.events.filter(event => event.route === 'publish').length, 0);
     assert.equal(manager.sessions.size, 0);
   } finally { await manager.close(); await emulator.close(); }

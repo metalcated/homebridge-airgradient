@@ -34,24 +34,43 @@ class Session {
     if (!this.system) throw Error('Thermostat did not provide a local system');
     await api.subscribe(this.system);
     const until = this.manager.now() + this.manager.connectTimeoutMs;
+    let catalog, catalogChangedAt = this.manager.now(), messages = 0, idle = 0;
     while (!this.stopped && this.manager.now() < until) {
       const updated = await api.messagePump();
+      if (updated) messages++; else idle++;
       this.noteData();
       const system = this.system;
-      // Subscribe responses arrive in several messages. Drain them through an
-      // idle response before fixing the initial list of zones/capabilities.
-      if (!updated && typeof system.serialNumber === 'string' && system.serialNumber.trim() &&
-        system.zones.some(zone => !zone.isZoneDisabled && normalizeZone(system, zone).measure_temperature !== undefined) &&
-        system.zones.filter(zone => !zone.isZoneDisabled && zone.name != null).every(zone =>
-          typeof zone.heatingOption === 'boolean' && typeof zone.coolingOption === 'boolean')) {
+      // Real controllers may continuously report unrelated system updates.
+      // Settle the discovery catalog, not the entire message stream. Numeric
+      // readings changing must not postpone pairing indefinitely.
+      const active = system.zones.filter(zone => !zone.isZoneDisabled && zone.name != null);
+      const usable = typeof system.serialNumber === 'string' && system.serialNumber.trim() &&
+        active.some(zone => normalizeZone(system, zone).measure_temperature !== undefined);
+      const nextCatalog = JSON.stringify({ serial: system.serialNumber, model: system.productType,
+        zones: system.zones.map(zone => ({ id: zone.id, disabled: zone.isZoneDisabled, name: zone.name,
+          hasTemperature: normalizeZone(system, zone).measure_temperature !== undefined,
+          heat: zone.heatingOption, cool: zone.coolingOption,
+          minHeat: zone.minHspC, maxHeat: zone.maxHspC, minCool: zone.minCspC, maxCool: zone.maxCspC })),
+        single: system.singleSetpointMode });
+      if (catalog !== nextCatalog) { catalog = nextCatalog; catalogChangedAt = this.manager.now(); }
+      if (usable && this.manager.now() - catalogChangedAt >= this.manager.catalogSettleMs) {
         this.readyState = true; this.lastData = this.manager.now(); this.lastRefresh = this.lastData;
         this.retryCount = 0;
         this.emit();
         return;
       }
-      await this.manager.sleep(this.manager.pollMs);
+      // Startup can queue dozens of separate configuration messages. Draining
+      // at the normal steady-state poll interval can consume the entire pairing
+      // deadline before the zones arrive. Yield briefly while data is queued.
+      await this.manager.sleep(updated ? this.manager.drainMs : this.manager.pollMs);
     }
-    throw Error('Thermostat did not provide its identity and zone readings in time');
+    const identified = typeof this.system.serialNumber === 'string' && !!this.system.serialNumber.trim();
+    const zones = this.system.zones.filter(zone => !zone.isZoneDisabled && zone.name != null);
+    const hasTemperature = zones.some(zone => normalizeZone(this.system, zone).measure_temperature !== undefined);
+    const missing = [!identified && 'controller identity', !hasTemperature && 'active-zone temperature'].filter(Boolean);
+    this.manager.log('Lennox pairing response summary', { messages, idle, identified,
+      activeZones: zones.length, hasTemperature });
+    throw Error(`Connected to the thermostat, but ${missing.length ? `its ${missing.join(' and ')} did not arrive` : 'its zone catalog did not settle'} in time. Check that another local integration is not connected, then retry.`);
   }
 
   zone(serial, zoneId) {
@@ -182,6 +201,8 @@ class SessionManager {
     this.clientFactory = options.clientFactory || (config => new ManagedS30API(config));
     this.now = options.now || Date.now; this.sleep = options.sleep || delay; this.log = options.log || (() => {});
     this.pollMs = options.pollMs ?? 1000; this.connectTimeoutMs = options.connectTimeoutMs ?? 30000;
+    this.drainMs = options.drainMs ?? Math.min(25, this.pollMs);
+    this.catalogSettleMs = options.catalogSettleMs ?? Math.min(1000, this.connectTimeoutMs / 3);
     this.confirmTimeoutMs = options.confirmTimeoutMs ?? 10000; this.retryMs = options.retryMs ?? 5000;
     this.refreshMs = options.refreshMs ?? 30000; this.staleMs = options.staleMs ?? 90000;
     this.sessions = new Map(); this.closed = false;

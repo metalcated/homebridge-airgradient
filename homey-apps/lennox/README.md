@@ -1,6 +1,6 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.0** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.1** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
@@ -12,7 +12,9 @@ A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible lo
 - A shared connection for all zones on the same address, bounded requests, reconnect attempts, stale-zone detection, and confirmation of writes through fresh reported state.
 - Repair for an address change, verifying the thermostat serial and zone before replacing the connection.
 
-The underlying `lennoxapi@0.1.2` advertises S30/S40/E30/M30 LAN support. Our local tests use emulated S30/S40/M30-shaped messages; physical compatibility remains to be verified. No vendor cloud account or password is used.
+The underlying `lennoxapi@0.1.2` advertises S30/S40/E30/M30 LAN support. Our local tests use emulated S30/S40/M30-shaped messages; physical compatibility of other models remains to be verified. No vendor cloud account or password is used.
+
+Version 0.1.1 also verifies read-only backend discovery on the user's S40. It supports the controller identity nested in equipment features, continuous notification traffic, and the initial configuration backlog. Completing Homey's pairing UI and testing real control changes remain separate acceptance steps.
 
 ## Install without local npm dependencies
 

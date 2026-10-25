@@ -10,13 +10,14 @@ const root = path.resolve(__dirname, '..');
 
 async function main() {
   let checked = false;
+  const version = require(path.join(root, 'app.json')).version;
   const fs = require('node:fs');
   const dockerfile = fs.readFileSync(path.join(root, 'Dockerfile'), 'utf8');
   assert(!/CMD.*--skip-build/.test(dockerfile), 'Installer must preprocess production dependencies');
   assert(dockerfile.includes('scripts/install-app.cjs'), 'Installer must verify upload and running state');
   await installApp({ root, homey: {
     platform: 'local', name: 'Packaging verification', baseUrl: 'http://127.0.0.1',
-    apps: { async getApp() { return { id: 'com.metalcated.lennox', version: '0.1.0', state: 'running', enabled: true }; } },
+    apps: { async getApp() { return { id: 'com.metalcated.lennox', version, state: 'running', enabled: true }; } },
     devkit: { async runApp({ app: stream, clean, debug }) {
       assert.equal(clean, false); assert.equal(debug, false);
       const chunks = [];

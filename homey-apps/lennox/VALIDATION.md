@@ -1,14 +1,14 @@
-# Lennox 0.1.0 validation
+# Lennox 0.1.1 validation
 
 Validated on October 24, 2026. This is a private Homey test release. App Store publication and physical thermostat acceptance are separate steps.
 
 ## Completed locally in isolated containers
 
-- **77 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools.
+- **93 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools.
 - JavaScript syntax and JSON validation pass.
 - Official Homey CLI **4.6.1** debug validation and app build pass.
 - The actual installer Dockerfile builds successfully and repeats syntax checks, all tests, Homey validation, and build.
-- The persistent install packaging path is exercised with a fake devkit endpoint. Its real archive contains **208 files, about 1.61 MiB unpacked**, and excludes development dependencies. An upload rejection remains an error rather than being masked by an already installed app.
+- The persistent install packaging path is exercised with a fake devkit endpoint. Its real archive contains **209 files, about 1.62 MiB unpacked**, and excludes development dependencies. An upload rejection remains an error rather than being masked by an already installed app.
 - Runtime dependency audit reports **zero findings** with `lennoxapi@0.1.2` and locked `undici@6.29.1`.
 - The Homey CLI development dependency tree has audit findings. These tools run in the build/installer container and are not included in the installed app. No forced downgrade or broad automatic dependency rewrite was applied.
 - The independent AirGradient plugin's lint, TypeScript compilation, and **28 tests pass**. Its npm package dry run confirms that no Homey app files are included.
@@ -26,6 +26,8 @@ Covered paths include:
 - Partial mode/fan/temperature commands, preserving unrelated period fields and other zones, read-only enforcement, known device permissions, disabled equipment, Away/manual-schedule guards, and no optimistic success on a command ACK.
 - HTTP errors, invalid JSON, bounded responses, timeouts, foreign origins, redirects, self-signed HTTPS, and firmware responses with conflicting HTTP framing headers. Global certificate validation remains enabled.
 - No controller-reset command in the app's recovery or command path.
+- Nested S30/M30 controller serial features and S40 equipment-0 identity, fragmented feature metadata, peripheral serial rejection, and ambiguous identity rejection.
+- Continuous nonempty responses, late zones during a continuous stream, and a 70-message configuration backlog before zone discovery. Pairing settles the device catalog instead of requiring the entire stream to become idle.
 
 The emulator intentionally does not represent every Lennox model or firmware. Its initial fixtures derive from the inspected protocol fields; it is not a substitute for a device test.
 
@@ -38,7 +40,19 @@ The corrected small archive still received HTTP 400 over the cloud relay. The lo
 ## Not yet verified live
 
 - Rendered Homey thermostat controls, Insights, Flow execution, or lifecycle teardown/restart on that server. Mocked SDK tests do not prove those paths.
-- A connection to the user's physical thermostat, readback accuracy, simultaneous-client behavior, or a real heating/cooling/fan change. No thermostat was paired by the installer.
+- Homey UI completion of physical-device pairing, ongoing physical-device recovery, simultaneous-client behavior, or a real heating/cooling/fan change. No thermostat was added to Homey by the installer.
+
+## S40 pairing correction and physical read-only verification
+
+After the user stopped only the Homebridge Lennox child bridge, read-only diagnostics from `iot-mgmt` confirmed the thermostat connected and responded. It delivered 69 messages in 18 seconds without an empty response, reported S40 identity in equipment 0's nested serial feature, and had one active zone plus three disabled zones. The pinned TypeScript client did not decode that serial, while the original Python implementation does.
+
+Version 0.1.1 adds the missing identity decoder, settles the usable device catalog independently of unrelated message traffic, and drains queued startup messages promptly. The old one-second wait between queued responses could consume the deadline before zone configuration arrived. No timeout was simply increased to hide these defects.
+
+The corrected complete backend pairing path was then run against the actual thermostat with `publishMessage` replaced by a throwing guard. It returned the stable controller identity and zone 0 in **6.042 seconds**, including temperature, humidity, supported modes, fan mode, and independently bounded heat/cool targets. The candidate was read-only; the diagnostic connection closed afterward. No thermostat command or controller reset was sent. Live serials and full device configuration were not copied into the repository.
+
+This validates physical read-only discovery by the same backend from the Homey host; it does not claim the user has completed Homey's pairing screen or that actual control writes have been tested.
+
+Version 0.1.1 was then installed on the selected Homey through the verified local tunnel. The installer independently confirmed the expected version reached `running`. Existing Homey settings were preserved, and the user-controlled Homebridge Lennox child bridge remained stopped for the trial.
 
 The existing Homebridge Lennox child bridge remains configured and was not paused or modified. Its code warns about competing local clients, so physical pairing should wait until that child bridge is paused deliberately.
 

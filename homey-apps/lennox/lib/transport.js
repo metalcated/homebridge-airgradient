@@ -5,6 +5,7 @@ const https = require('node:https');
 const { randomBytes } = require('node:crypto');
 const { S30API } = require('lennoxapi');
 const { validateHost } = require('./model');
+const { IdentityTracker } = require('./identity');
 
 // Adapt the pinned parser/client rather than changing the global TLS or HTTP
 // configuration. Some Lennox LAN firmware sends conflicting framing headers.
@@ -31,6 +32,7 @@ class ManagedS30API extends S30API {
     // Track whether parameter 525 was actually reported. The upstream default
     // false alone cannot tell us which temperature mode the thermostat uses.
     this.hasSetpointMode = false;
+    this.identity = new IdentityTracker();
   }
 
   request(method, url, body) {
@@ -98,6 +100,9 @@ class ManagedS30API extends S30API {
       }
     }
     system.processMessage(data);
+    const identity = this.identity.update(data);
+    system.serialNumber = identity.serial;
+    if (identity.productType) system.productType = identity.productType;
     for (const zone of data.zones || []) {
       if (zone.status) this.zoneRevisions.set(zone.id, (this.zoneRevisions.get(zone.id) || 0) + 1);
       if (zone.status && ('temperature' in zone.status || 'temperatureC' in zone.status)) {

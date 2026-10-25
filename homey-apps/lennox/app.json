@@ -1,6 +1,6 @@
 {
   "id": "com.metalcated.lennox",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "compatibility": ">=12.9.0",
   "runtime": "nodejs",
   "sdk": 3,
@@ -19,7 +19,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "heat_increase": {
       "type": "boolean",
@@ -28,7 +28,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "cool_decrease": {
       "type": "boolean",
@@ -37,7 +37,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "cool_increase": {
       "type": "boolean",
@@ -46,7 +46,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "target_decrease": {
       "type": "boolean",
@@ -55,7 +55,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "target_increase": {
       "type": "boolean",
@@ -64,7 +64,7 @@
       "getable": false,
       "setable": true,
       "insights": false,
-      "uiComponent": "button"
+      "uiComponent": null
     },
     "heat_target": {
       "type": "number",

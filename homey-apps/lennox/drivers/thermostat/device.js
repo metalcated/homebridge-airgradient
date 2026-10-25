@@ -115,7 +115,8 @@ class LennoxDevice extends Homey.Device {
       for (const capability of Object.keys(ADJUSTMENTS)) {
         optionsByCapability[capability] = {
           ...(optionsByCapability[capability] || {}),
-          uiComponent: adjustments.has(capability) ? 'button' : null,
+          // The scoped web dial renders these stateless commands in place.
+          uiComponent: null,
           preventInsights: true,
           preventTag: true,
         };

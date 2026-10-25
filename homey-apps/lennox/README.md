@@ -1,12 +1,12 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.4** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.5** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
 - Manual IP/hostname pairing with zone selection and stable serial/zone identities.
 - Temperature, humidity when reported, operating state, supported HVAC modes, and fan modes.
-- Native draggable temperature dials that follow the selected mode: heating in Heat, cooling in Cool, and both in Automatic. Separate precision buttons provide one-degree Fahrenheit or half-degree Celsius adjustments. Single-setpoint systems use their normal single target. Custom Flow temperature arguments are explicitly Celsius.
+- Native draggable temperature dials that follow the selected mode: heating in Heat, cooling in Cool, and both in Automatic. Small precision buttons on the dial provide one-degree Fahrenheit or half-degree Celsius adjustments with the optional local web patch. Single-setpoint systems use their normal single target. Custom Flow temperature arguments are explicitly Celsius.
 - Heating, cooling, fan actions and operating-state conditions in Flow. Native capabilities also provide Homey's normal cards and Insights where supported.
 - Read-only mode enabled for each new device. Disable it in that device's advanced settings to permit commands.
 - A shared connection for all zones on the same address, bounded requests, reconnect attempts, stale-zone detection, and confirmation of writes through fresh reported state.
@@ -61,11 +61,11 @@ Version 0.1.3 corrected the native thermostat names required by Homey. Version 0
 
 The original drag dial remains. In Advanced Settings, set **Temperature controls** to match the units displayed by Homey: Fahrenheit uses whole-degree steps; Celsius uses half-degree steps. This private release defaults to Fahrenheit for the current installation. The preference controls adjustment steps and confirmation, not Homey's displayed units or the thermostat's unit setting. The deployed Homey 13.5.3 app SDK reports metric units even when its country-based interface displays Fahrenheit, so the app uses this explicit preference.
 
-Open the additional button tab in the device controls for **Heating − / +**, **Cooling − / +**, or the single-target equivalents. Buttons follow the selected mode and calculate each adjustment from a fresh thermostat response inside the shared command queue, so rapid presses do not all reuse one cached value. They use the same read-only, permission, schedule, Away, separation, and confirmation checks as dragging.
+Version 0.1.5 keeps the relative command capabilities hidden from the separate button tab. The [local controls patch](docs/HOMEY-WEB-CONTROLS.md) places small **− / +** buttons directly below the native drag dial, using the selected heating, cooling, or single target. Buttons follow the selected mode and calculate each adjustment from a fresh thermostat response inside the shared command queue, so rapid presses do not all reuse one cached value. They use the same read-only, permission, schedule, Away, separation, and confirmation checks as dragging.
 
 The dials use the reported limits and current temperature. Heating colors appear when the enabled heating target is above the measured temperature; cooling colors appear when enabled cooling is below the measured temperature. Both remain neutral within an automatic heat/cool band. The separate **Operating state** reading reports the thermostat's actual activity; Homey computes dial colors from temperature demand.
 
-Homey intentionally disables the **Status Indicator** selector for thermostat-class devices, although its current web interface still renders a blank selector. This is a [documented Homey restriction](https://apps.developer.homey.app/the-basics/devices/capabilities#device-indicators-and-custom-capabilities). The tile uses Homey's automatic thermostat indicator. Homey's default tile cannot fully represent both independent targets in automatic mode; the detailed controls and Operating state reading remain the useful views. This app does not invent one scalar target for an automatic heat/cool band or request broad control of other Homey devices to override that restriction.
+Homey disables the **Status Indicator** selector for thermostat-class devices. The optional [local controls patch](docs/HOMEY-WEB-CONTROLS.md) enables it only for this Lennox driver, offering room temperature, humidity, Operating state, and None. The tile respects the saved choice. Without that patch, Homey retains its automatic thermostat indicator and blank selector. The app installer does not modify Homey’s own web assets.
 
 Homey lists a current-temperature companion beside each displayed native target on the expanded device tile. These are the same room measurement, not separate heating and cooling sensors. Its native grouping takes precedence over component visibility options, so the app reconciles only the derived native target aliases when the mode changes. Those aliases do not own Insights history or the app's existing Flow actions. The original custom targets, base single target, measurements, settings, and device identity remain. Incomplete mode metadata does not prune controls.
 

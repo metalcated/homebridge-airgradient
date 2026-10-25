@@ -439,7 +439,7 @@ test('stateless plus/minus listeners use explicit control units and the existing
   await device._updates;
   assert.equal(device.capabilityOptions.cool_increase.uiComponent, null);
   assert.equal(device.hasCapability('cool_increase'), true, 'Inactive buttons retain their IDs');
-  assert.equal(device.capabilityOptions.heat_increase.uiComponent, 'button');
+  assert.equal(device.capabilityOptions.heat_increase.uiComponent, null, 'Relative commands stay available without a separate button tab');
   await device.onUninit();
 });
 

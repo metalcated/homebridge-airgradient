@@ -1,6 +1,6 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.1** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.2** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
@@ -14,7 +14,7 @@ A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible lo
 
 The underlying `lennoxapi@0.1.2` advertises S30/S40/E30/M30 LAN support. Our local tests use emulated S30/S40/M30-shaped messages; physical compatibility of other models remains to be verified. No vendor cloud account or password is used.
 
-Version 0.1.1 also verifies read-only backend discovery on the user's S40. It supports the controller identity nested in equipment features, continuous notification traffic, and the initial configuration backlog. Completing Homey's pairing UI and testing real control changes remain separate acceptance steps.
+Version 0.1.1 also verifies read-only backend discovery on the user's S40. It supports the controller identity nested in equipment features, continuous notification traffic, and the initial configuration backlog. The actual Homey pairing screen has also discovered the physical S40 zone. Adding the device and testing real control changes remain separate acceptance steps. Version 0.1.2 supplies Homey's dedicated repair view and checks that both pairing and repair pages are included in the installation archive.
 
 ## Install without local npm dependencies
 
@@ -47,6 +47,10 @@ The existing Homebridge integration warns that another local client can interfer
 3. Select its zones. Each starts in **Read-only mode**.
 4. Compare readings and operating state with the thermostat and Lennox app.
 5. To test controls, disable Read-only mode in one Homey device's advanced settings, make one small reversible change, confirm it at the thermostat, and restore the original value.
+
+If Homey says **Another pair session is already active**, close the old Lennox pairing dialog and any other tab still running that wizard. If a dialog was abandoned during an update or connection error, wait at least 35 seconds after its last heartbeat, then open one fresh attempt. Homey 13.5.3 expires abandoned sessions per driver; an open wizard keeps its session alive. Cancel using Homey's close button and confirmation modal when leaving a scan. Do not restart unrelated services or remove devices to clear this message.
+
+On Homey 13.5.3, a privately installed app can show a blank brand circle even when its local SVG is present: the web brand picker requests only Athom's public icon CDN and does not use the app's local icon URL. The thermostat tile does use the local fallback. Refreshing may clear a cached request, but cannot put a private icon on that CDN. This is a Homey web interface limitation; changing thermostat settings or reinstalling the app does not address it.
 
 A static DHCP lease is recommended. Use Homey's Repair action to update an address; pairing identity is based on the serial number and zone, so an IP change does not create a different thermostat.
 

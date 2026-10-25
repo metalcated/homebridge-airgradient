@@ -1,14 +1,14 @@
-# Lennox 0.1.1 validation
+# Lennox 0.1.2 validation
 
 Validated on October 24, 2026. This is a private Homey test release. App Store publication and physical thermostat acceptance are separate steps.
 
 ## Completed locally in isolated containers
 
-- **93 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools.
+- **95 tests pass** under Node 22 with production dependencies only, and under Node 24 with the Homey development tools.
 - JavaScript syntax and JSON validation pass.
 - Official Homey CLI **4.6.1** debug validation and app build pass.
 - The actual installer Dockerfile builds successfully and repeats syntax checks, all tests, Homey validation, and build.
-- The persistent install packaging path is exercised with a fake devkit endpoint. Its real archive contains **209 files, about 1.62 MiB unpacked**, and excludes development dependencies. An upload rejection remains an error rather than being masked by an already installed app.
+- The persistent install packaging path is exercised with a fake devkit endpoint. Its real archive contains **210 files, about 1.63 MiB unpacked**, and excludes development dependencies. An upload rejection remains an error rather than being masked by an already installed app.
 - Runtime dependency audit reports **zero findings** with `lennoxapi@0.1.2` and locked `undici@6.29.1`.
 - The Homey CLI development dependency tree has audit findings. These tools run in the build/installer container and are not included in the installed app. No forced downgrade or broad automatic dependency rewrite was applied.
 - The independent AirGradient plugin's lint, TypeScript compilation, and **28 tests pass**. Its npm package dry run confirms that no Homey app files are included.
@@ -50,11 +50,23 @@ Version 0.1.1 adds the missing identity decoder, settles the usable device catal
 
 The corrected complete backend pairing path was then run against the actual thermostat with `publishMessage` replaced by a throwing guard. It returned the stable controller identity and zone 0 in **6.042 seconds**, including temperature, humidity, supported modes, fan mode, and independently bounded heat/cool targets. The candidate was read-only; the diagnostic connection closed afterward. No thermostat command or controller reset was sent. Live serials and full device configuration were not copied into the repository.
 
-This validates physical read-only discovery by the same backend from the Homey host; it does not claim the user has completed Homey's pairing screen or that actual control writes have been tested.
+This validates physical read-only discovery by the same backend from the Homey host. Subsequent actual Homey UI discovery is recorded below; adding the device and actual control writes remain untested.
 
 Version 0.1.1 was then installed on the selected Homey through the verified local tunnel. The installer independently confirmed the expected version reached `running`. Existing Homey settings were preserved, and the user-controlled Homebridge Lennox child bridge remained stopped for the trial.
 
-The existing Homebridge Lennox child bridge remains configured and was not paused or modified. Its code warns about competing local clients, so physical pairing should wait until that child bridge is paused deliberately.
+The existing Homebridge Lennox child bridge remains configured. The user stopped that child bridge before the physical discovery checks; this app does not modify Homebridge or restart it.
+
+## Homey pairing session and view verification
+
+The actual Homey 13.5.3 server implementation permits only one active pairing session per driver. It rejects overlapping attempts with HTTP 409, expires sessions after 35 seconds without a heartbeat, and removes expired same-driver sessions when a fresh attempt starts. Failed new attempts delete their own sessions, so the IDs printed with those failures do not identify the original lock holder.
+
+In the user's Homey web interface, the old Lennox wizard was closed, the page refreshed, and the abandoned session allowed to expire. One fresh attempt opened successfully and the actual connection form discovered **one physical S40 zone**. The test wizard was then closed through Homey's confirmation modal, without creating a Homey thermostat device or changing thermostat settings. A second fresh wizard reopened successfully and was also closed cleanly; the server logged successful session creation (HTTP 200) and deletion (HTTP 204) for both attempts. No Homey service restart or broad session cleanup was required.
+
+Review of the deployed view loader also showed that repair pages are served from `drivers/thermostat/repair/`, independently from `pair/`. Version 0.1.2 adds the missing repair entry page. Tests load the real manifest-selected paths, cover repair failure/retry/reopen, require equivalent pair and repair forms, and inspect the actual upload archive for both pages. Existing pairing initialization remains unchanged: the deployed pairing SDK supplies `window.Homey` before starting views.
+
+Version 0.1.2 was installed through the verified localhost tunnel and independently reported as running on the selected Homey. Actual repair of a paired physical device remains unverified because the test stopped before adding a thermostat.
+
+The missing brand glyph was traced to the deployed web bundle's brand picker, which constructs only `https://icons-cdn.athom.com/<iconObj.id>.svg` and ignores the private app's local `iconObj.url`. The exact CDN URL returned HTTP 403, while the Homey's app and driver icon URLs both returned HTTP 200 with the correct SVG. The driver tile uses a loader with a local fallback and renders successfully. A full browser refresh did not fix the brand glyph. This project does not modify Homey's own web bundle or claim that changing SVG geometry fixes that upstream limitation.
 
 ## Live acceptance and rollback
 

@@ -35,6 +35,10 @@ async function main() {
       }
       const normalized = files.map(file => file.replace(/^\.\//, ''));
       assert(normalized.includes('app.json') && normalized.includes('lib/session.js'));
+      for (const view of ['pair', 'repair']) {
+        assert(normalized.includes(`drivers/thermostat/${view}/connect.html`), `${view} view missing from the installed app`);
+      }
+      assert(normalized.includes('assets/icon.svg'), 'Local app icon must be included');
       assert(normalized.some(file => file.startsWith('node_modules/lennoxapi/')));
       assert(normalized.includes('node_modules/undici/index.js'));
       assert(!normalized.some(file => /^(test|scripts|\.homeybuild)\//.test(file)));

@@ -388,10 +388,14 @@ function pairingPage({ repair = false, emit } = {}) {
   }
   const alerts = [], views = [], events = [];
   let done = false;
-  const Homey = { getOptions: async () => ({ repair }), __: key => key, setTitle() {},
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  const driver = manifest.drivers.find(item => item.id === 'thermostat');
+  const group = repair ? 'repair' : 'pair';
+  const view = driver[group].find(item => !item.template);
+  const Homey = { getOptions: async () => view.options || {}, __: key => key, setTitle() {},
     emit: async (event, data) => { events.push([event, data]); return emit ? emit(event, data) : {}; },
     alert: async (message, icon) => alerts.push([message, icon]), showView: view => views.push(view), done: () => { done = true; } };
-  const html = fs.readFileSync(path.join(root, 'drivers/thermostat/pair/connect.html'), 'utf8');
+  const html = fs.readFileSync(path.join(root, 'drivers/thermostat', group, `${view.id}.html`), 'utf8');
   const source = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1];
   vm.runInNewContext(source, { document: { getElementById: id => elements.get(id) }, Homey,
     window: { addEventListener: (event, callback) => windowListeners.set(event, callback) } });
@@ -400,6 +404,20 @@ function pairingPage({ repair = false, emit } = {}) {
 }
 
 async function microtasks() { for (let index = 0; index < 8; index++) await Promise.resolve(); }
+
+test('pairing and repair both ship their declared custom view and keep the shared form synchronized', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  const driver = manifest.drivers.find(item => item.id === 'thermostat');
+  const contents = {};
+  for (const group of ['pair', 'repair']) {
+    for (const view of driver[group].filter(item => !item.template)) {
+      const filename = path.join(root, 'drivers/thermostat', group, `${view.id}.html`);
+      assert.equal(fs.existsSync(filename), true, `Missing ${group} view ${view.id}`);
+      contents[group] = fs.readFileSync(filename, 'utf8');
+    }
+  }
+  assert.equal(contents.repair, contents.pair, 'Repair and pairing copies must receive the same shared form changes');
+});
 
 test('pairing UI retries via Homey modals without native prompts or browser storage', async () => {
   let fail = true;
@@ -434,4 +452,38 @@ test('pairing UI ignores completion after navigation away and repair reuses the 
   assert.equal(repaired.isDone(), true);
   assert.equal(repaired.views.length, 0);
   assert.equal(repaired.alerts[0][1], 'info');
+});
+
+test('the actual repair view supports a failed connection, retry, and reopening with the repaired address', async () => {
+  let fail = true;
+  let savedHost = '192.0.2.20';
+  const emit = async (event, data) => {
+    if (event === 'repair_info') return { host: savedHost };
+    if (fail) throw Error('Thermostat unreachable');
+    savedHost = data.host;
+    return { repaired: true };
+  };
+  const page = pairingPage({ repair: true, emit });
+  await microtasks();
+  assert.equal(page.elements.get('host').value, '192.0.2.20');
+  page.elements.get('host').value = '192.0.2.30';
+  await page.submit();
+  assert.equal(page.isDone(), false);
+  assert.equal(page.alerts[0][0], 'Thermostat unreachable');
+  assert.equal(page.elements.get('connect').disabled, false);
+  assert.equal(page.elements.get('host').disabled, false);
+  assert.equal(savedHost, '192.0.2.20');
+  fail = false;
+  await page.submit();
+  assert.equal(page.isDone(), true);
+  assert.equal(savedHost, '192.0.2.30');
+  assert.equal(page.views.length, 0);
+  const reopened = pairingPage({ repair: true, emit });
+  await microtasks();
+  assert.equal(reopened.isDone(), false);
+  assert.equal(reopened.elements.get('host').value, '192.0.2.30');
+  assert.equal(reopened.elements.get('read-only-note').hidden, true);
+  await reopened.submit();
+  assert.equal(reopened.isDone(), true);
+  assert.equal(reopened.views.length, 0);
 });

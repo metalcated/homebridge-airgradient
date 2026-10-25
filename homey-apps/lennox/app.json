@@ -1,6 +1,6 @@
 {
   "id": "com.metalcated.lennox",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "compatibility": ">=12.9.0",
   "runtime": "nodejs",
   "sdk": 3,

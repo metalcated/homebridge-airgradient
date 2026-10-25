@@ -1,6 +1,6 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.5** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.6** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
@@ -58,6 +58,8 @@ A static DHCP lease is recommended. Use Homey's Repair action to update an addre
 ## Temperature dials and status indicators
 
 Version 0.1.3 corrected the native thermostat names required by Homey. Version 0.1.4 makes those derived controls follow the selected mode: **Heat** exposes only Heating target, **Cool** only Cooling target, **Automatic** both, and **Off** neither. Changing mode does not erase the thermostat's stored opposite target. Existing custom capability IDs remain for Flow actions and Insights history. Reopen the device control after an app update.
+
+Version 0.1.6 fixes false confirmation failures when the thermostat reports only Fahrenheit or only Celsius for a target. It discards the omitted cached counterpart while preserving contradictory pairs as failures. See [temperature readback evidence and diagnostics](docs/TEMPERATURE-READBACK.md).
 
 The original drag dial remains. In Advanced Settings, set **Temperature controls** to match the units displayed by Homey: Fahrenheit uses whole-degree steps; Celsius uses half-degree steps. This private release defaults to Fahrenheit for the current installation. The preference controls adjustment steps and confirmation, not Homey's displayed units or the thermostat's unit setting. The deployed Homey 13.5.3 app SDK reports metric units even when its country-based interface displays Fahrenheit, so the app uses this explicit preference.
 

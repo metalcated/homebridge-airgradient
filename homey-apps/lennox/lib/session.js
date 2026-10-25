@@ -180,6 +180,24 @@ class Session {
     throw Error('No fresh thermostat response was received; check its connection');
   }
 
+  temperatureReadback(plan, zone, zoneId, outcome) {
+    if (!plan.temperature) return;
+    const { key, celsius, fahrenheit, units } = plan.temperature;
+    const target = { hsp: 'heat', csp: 'cool', sp: 'target' }[key];
+    const report = this.api.targetReports?.get(zoneId)?.[target];
+    const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+    // A bounded local diagnostic, with no address, serial, zone name or payload.
+    // Presence flags distinguish a current wire value from the parser's cache.
+    this.manager.log('Lennox temperature readback', { outcome, target, units,
+      expectedC: celsius, expectedF: fahrenheit,
+      parsedC: number(zone[key + 'C']), parsedF: number(zone[key]),
+      targetReportRevision: report?.revision ?? null,
+      reportedCPresent: report?.hasC ?? null, reportedFPresent: report?.hasF ?? null,
+      reportedC: number(report?.celsius), reportedF: number(report?.fahrenheit),
+      publishStatus: number(this.api.lastPublishAcknowledgement?.status),
+      publishCode: number(this.api.lastPublishAcknowledgement?.code) });
+  }
+
   async command(serial, zoneId, command, context) {
     await this.manager.commandPhase(context, 'connect', () => this.connect(context));
     let zone = this.zone(serial, zoneId);
@@ -213,12 +231,14 @@ class Session {
           }
         }
         if (confirmed) {
+          this.temperatureReadback(plan, zone, zoneId, 'confirmed');
           this.emit(); return state;
         }
         await this.manager.commandSleep(this.manager.drainMs, context);
       } while (!this.stopped && this.manager.now() < until);
+      this.temperatureReadback(plan, zone, zoneId, 'unconfirmed');
       this.emit();
-      throw Error('The thermostat did not confirm this change. Check its active schedule or away settings before retrying.');
+      throw Error('The thermostat did not confirm this change. Its latest reported state did not match the request; check the current reading before retrying.');
     });
   }
 

@@ -29,6 +29,11 @@ class ManagedS30API extends S30API {
     this.zoneRevisions = new Map();
     this.temperatureRevisions = new Map();
     this.periodRevisions = new Map();
+    // Diagnostic snapshots retain which representations actually arrived
+    // together, separately from the upstream parser's merged attribute cache.
+    this.periodReportRevision = 0;
+    this.targetReports = new Map();
+    this.lastPublishAcknowledgement = null;
     // Track whether parameter 525 was actually reported. The upstream default
     // false alone cannot tell us which temperature mode the thermostat uses.
     this.hasSetpointMode = false;
@@ -81,7 +86,22 @@ class ManagedS30API extends S30API {
   }
 
   get(url) { return this.request('GET', url); }
-  post(url, body) { return this.request('POST', url, body); }
+  async post(url, body) {
+    const publication = url === this.urlPublish;
+    if (publication) this.lastPublishAcknowledgement = null;
+    const response = await this.request('POST', url, body);
+    if (publication) {
+      let code = null;
+      try {
+        // request() has already bounded and cached the response body. Retain
+        // only numeric ACK metadata; the pinned publisher's policy is unchanged.
+        const value = JSON.parse(await response.text())?.code;
+        if (typeof value === 'number' && Number.isFinite(value)) code = value;
+      } catch { /* empty or malformed legacy responses have no numeric code */ }
+      this.lastPublishAcknowledgement = { status: response.status, code };
+    }
+    return response;
+  }
 
   async publishTemperatureDeadband(sysId, value) {
     const parameter = this.temperatureDeadband;
@@ -161,11 +181,32 @@ class ManagedS30API extends S30API {
         this.temperatureRevisions.set(zone.id, (this.temperatureRevisions.get(zone.id) || 0) + 1);
       }
       const period = zone.status?.period;
+      if (period && typeof period === 'object') {
+        const revision = ++this.periodReportRevision;
+        const reports = { ...this.targetReports.get(zone.id) };
+        for (const [kind, key] of [['heat', 'hsp'], ['cool', 'csp'], ['target', 'sp']]) {
+          const hasF = key in period, hasC = key + 'C' in period;
+          if (!hasF && !hasC) continue;
+          const numeric = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+          reports[kind] = { revision, hasF, hasC,
+            fahrenheit: numeric(period[key]), celsius: numeric(period[key + 'C']) };
+        }
+        this.targetReports.set(zone.id, reports);
+      }
       if (period && 'systemMode' in period && 'fanMode' in period &&
         (('hsp' in period || 'hspC' in period) && ('csp' in period || 'cspC' in period) || 'sp' in period || 'spC' in period)) {
         this.periodRevisions.set(zone.id, (this.periodRevisions.get(zone.id) || 0) + 1);
       }
       const parsed = system.zones.find(item => item.id === zone.id);
+      if (parsed && period && typeof period === 'object') {
+        for (const key of ['hsp', 'csp', 'sp']) {
+          const hasF = key in period, hasC = key + 'C' in period;
+          // A single-unit update supersedes the previous target. The pinned
+          // parser retains omitted attributes, so discard its stale counterpart
+          // and let consumers convert the value that actually arrived.
+          if (hasF !== hasC) parsed[hasF ? key + 'C' : key] = undefined;
+        }
+      }
       if (parsed && zone.config) {
         if ('temperatureDeadbandC' in zone.config) parsed.temperatureDeadbandC = zone.config.temperatureDeadbandC;
         if ('writeAccess' in zone.config) parsed.localWriteAccess = zone.config.writeAccess;

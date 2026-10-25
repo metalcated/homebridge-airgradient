@@ -1,4 +1,12 @@
-# Lennox 0.1.4 validation
+# Lennox validation
+
+## Version 0.1.6 readback correction
+
+The complete suite passes **192/192 tests** on Node 22 and Node 24 with the reviewed vendor asset supplied. Homey CLI validation, build, and actual installation-archive checks pass. Six new HTTP cases reproduced a false confirmation failure when the pinned parser retained an omitted temperature-unit counterpart; these now confirm the applied heating, cooling, or single target. Contradictory paired reports and invalid single-unit reports still fail. ACK diagnostics preserve existing protocol behavior and expose only bounded numeric metadata. See [temperature readback evidence](docs/TEMPERATURE-READBACK.md) for the reproduction and the distinction from the user's physical failure.
+
+The 0.1.5 local web controls and status selector remain unchanged. Their [live verification and rollback evidence](docs/HOMEY-WEB-CONTROLS.md) is separate from physical command acceptance. The following sections retain the earlier validation record.
+
+## Version 0.1.4 baseline
 
 Validated on October 24, 2026. This is a private Homey test release. App Store publication and physical thermostat acceptance are separate steps.
 

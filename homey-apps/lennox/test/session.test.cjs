@@ -36,6 +36,8 @@ class FakeClient {
     this.system = { sysId: 'LCC', serialNumber: options.serial ?? SERIAL, name: 'Emulated Lennox',
       singleSetpointMode: false, hspCCspCSeparation: 1.5, manualAwayMode: false, getAwayMode: () => false,
       zones: [zone(0), zone(1), zone(2, { isZoneDisabled: true })] };
+    Object.assign(this.system, options.systemOverrides || {});
+    Object.assign(this.system.zones[0], options.zoneOverrides || {});
     this.hasSetpointMode = options.hasSetpointMode ?? true;
     this.events = [];
     this.pending = [];
@@ -100,7 +102,15 @@ class FakeClient {
       const target = this.system.zones.find(item => item.id === zoneId);
       assert.ok(target, 'Commands must address one manual zone schedule');
       const period = schedule.schedule.periods[0].period;
-      this.pending.push({ zones: [zoneId], apply: () => Object.assign(target, period) });
+      this.pending.push({ zones: [zoneId], apply: () => {
+        Object.assign(target, period);
+        const key = Object.keys(period).find(key => ['hspC', 'cspC', 'spC'].includes(key));
+        if (key && this.options.readbackCFromF) target[key] = (target[key.slice(0, -1)] - 32) * 5 / 9;
+        if (key && this.options.readbackOffsetC) target[key] += this.options.readbackOffsetC;
+        if (key && this.options.readbackOffsetF) target[key.slice(0, -1)] += this.options.readbackOffsetF;
+        if (key && this.options.readbackFOnly) target[key] = null;
+        if (key && this.options.readbackCOnly) target[key.slice(0, -1)] = null;
+      } });
     });
   }
   async close() {
@@ -449,6 +459,137 @@ test('background polling and commands never overlap on a shared controller conne
     assert.equal((await command).heat_target, 21);
     assert.equal(clients[0].maxActive, 1);
   } finally { unblock?.(); await remove(); await manager.close(); }
+});
+
+test('queued relative clicks read fresh state and accumulate one Fahrenheit or half-Celsius per successful adjustment', async () => {
+  for (const [units, zoneOverrides, expected] of [
+    ['imperial', { hsp: 73, hspC: 23, csp: 85, cspC: 29.5 }, [74, 75]],
+    ['metric', {}, [20.5, 21]],
+  ]) {
+    const { manager, clients } = setup({ clientOptions: { zoneOverrides } });
+    try {
+      const commands = [1, 2].map(() => manager.command(HOST, SERIAL, 0,
+        { type: 'adjust', target: 'heat', direction: 1, units }, false));
+      const results = await Promise.all(commands);
+      const writes = publishes(clients[0]).map(event => event.data.schedules[0].schedule.periods[0].period);
+      assert.deepEqual(writes.map(period => period[units === 'imperial' ? 'hsp' : 'hspC']), expected);
+      assert.equal(results.at(-1).heat_target, units === 'imperial' ? 24 : 21);
+      assert.equal(clients[0].system.zones[0].cspC, zoneOverrides.cspC ?? 25);
+      assert.equal(clients[0].maxActive, 1);
+    } finally { await manager.close(); }
+  }
+});
+
+test('a failed adjustment does not poison the serialized queue or alter the opposite target', async () => {
+  const { manager, clients } = setup();
+  try {
+    const results = await Promise.allSettled([
+      manager.command(HOST, SERIAL, 0, { type: 'adjust', target: 'heat', direction: 1, units: 'metric' }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'heat', value: 99 }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'adjust', target: 'heat', direction: 1, units: 'metric' }, false),
+    ]);
+    assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled']);
+    assert.deepEqual(publishes(clients[0]).map(event => event.data.schedules[0].schedule.periods[0].period.hspC), [20.5, 21]);
+    assert.equal(clients[0].system.zones[0].cspC, 25);
+    assert.equal(clients[0].system.zones[1].hspC, 20);
+  } finally { await manager.close(); }
+});
+
+test('a four-degree Automatic transition rejection does not publish, alter the opposite target or poison later commands', async () => {
+  const { manager, clients } = setup({ clientOptions: {
+    systemOverrides: { hspCspSeparation: 4, hspCCspCSeparation: 2 },
+    zoneOverrides: { systemMode: 'heat', hsp: 72, hspC: 22, csp: 76, cspC: 24.5 },
+  } });
+  try {
+    const results = await Promise.allSettled([
+      manager.command(HOST, SERIAL, 0, { type: 'heat', value: 23.5 }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'mode', value: 'auto' }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'mode', value: 'heat' }, false),
+    ]);
+    assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled']);
+    assert.match(results[1].reason.message, /Automatic mode.*separated/);
+    const writes = publishes(clients[0]).map(event => event.data.schedules[0].schedule.periods[0].period);
+    assert.deepEqual(writes, [{ hspC: 23.5, hsp: 74 }, { systemMode: 'heat' }]);
+    assert.equal(clients[0].system.zones[0].csp, 76);
+    assert.equal(clients[0].system.zones[0].cspC, 24.5);
+    assert.equal(clients[0].system.zones[0].systemMode, 'heat');
+  } finally { await manager.close(); }
+});
+
+test('temperature confirmation accepts native precision but rejects a neighbouring Celsius step or contradictory Fahrenheit value', async () => {
+  for (const [clientOptions, accepted] of [
+    [{ readbackOffsetC: 1e-10 }, true], [{ readbackFOnly: true }, true],
+    [{ readbackOffsetC: 0.25 }, false], [{ readbackOffsetF: 1 }, false],
+  ]) {
+    const { manager, clients } = setup({ clientOptions });
+    try {
+      const action = manager.command(HOST, SERIAL, 0, { type: 'heat', value: 21 }, false);
+      if (accepted) await action;
+      else await assert.rejects(action, /did not confirm/);
+      assert.equal(publishes(clients[0]).length, 1);
+    } finally { await manager.close(); }
+  }
+});
+
+test('imperial requests confirm a full Fahrenheit-canonical echo while metric requests keep their half-Celsius contract', async () => {
+  const relative = { type: 'adjust', target: 'heat', direction: 1, units: 'imperial' };
+  const absolute = { type: 'heat', value: 22.5, units: 'imperial' };
+  for (const [command, modifiers, accepted] of [
+    [relative, {}, true],
+    [absolute, {}, true],
+    [relative, { readbackCOnly: true }, true],
+    [relative, { readbackOffsetC: 5 / 9 }, false],
+    [relative, { readbackOffsetF: 1 }, false],
+    [{ type: 'heat', value: 22.5 }, {}, false],
+  ]) {
+    const { manager, clients } = setup({ clientOptions: {
+      zoneOverrides: { hsp: 72, hspC: 22, csp: 85, cspC: 29.5 },
+      readbackCFromF: true, ...modifiers,
+    } });
+    try {
+      const action = manager.command(HOST, SERIAL, 0, command, false);
+      if (accepted) {
+        const state = await action;
+        assert.equal(Math.round(state.heat_target * 9 / 5 + 32), 73, 'The observed value must display the requested Fahrenheit target');
+      } else await assert.rejects(action, /did not confirm/);
+      const writes = publishes(clients[0]);
+      assert.equal(writes.length, 1);
+      assert.deepEqual(writes[0].data.schedules[0].schedule.periods[0].period,
+        { hspC: command.type === 'adjust' ? 23 : 22.5, hsp: 73 });
+      assert.equal(clients[0].system.zones[0].csp, 85);
+      assert.equal(clients[0].system.zones[0].cspC, 29.5);
+    } finally { await manager.close(); }
+  }
+});
+
+test('imperial hardware endpoints publish their valid paired representation and outside Fahrenheit or metric requests never publish', async () => {
+  for (const type of ['heat', 'cool']) {
+    for (const [units, value, expectedF] of [
+      ['imperial', (40 - 32) * 5 / 9, 40], ['imperial', (90 - 32) * 5 / 9, 90],
+      ['imperial', (39 - 32) * 5 / 9, null], ['imperial', (91 - 32) * 5 / 9, null],
+      ['metric', 4.44, null], ['metric', 32.22, null],
+    ]) {
+      const { manager, clients } = setup({ clientOptions: { zoneOverrides: {
+        systemMode: type, minHspC: 4.5, minHsp: 40, maxHspC: 32, maxHsp: 90,
+        minCspC: 4.5, minCsp: 40, maxCspC: 32, maxCsp: 90,
+      } } });
+      try {
+        const action = manager.command(HOST, SERIAL, 0, { type, value, units }, false);
+        if (expectedF === null) {
+          await assert.rejects(action, /limits/);
+          assert.equal(publishes(clients[0]).length, 0);
+        } else {
+          await action;
+          const key = type === 'heat' ? 'hsp' : 'csp';
+          const expectedC = expectedF === 40 ? 4.5 : 32;
+          assert.deepEqual(publishes(clients[0]).map(event => event.data.schedules[0].schedule.periods[0].period),
+            [{ [key + 'C']: expectedC, [key]: expectedF }]);
+        }
+        assert.equal(clients[0].system.zones[0][type === 'heat' ? 'csp' : 'hsp'], type === 'heat' ? 77 : 68);
+        assert.equal(clients[0].system.zones[1].hspC, 20);
+      } finally { await manager.close(); }
+    }
+  }
 });
 
 test('app shutdown closes connections and rejects new pairing, subscriptions, and control attempts', async () => {

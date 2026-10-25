@@ -108,7 +108,12 @@ function makeSnapshot(options = {}) {
       },
     },
     zones: Array.from({ length: options.zones ?? 2 }, (_, id) => makeZone(id, options)),
-    equipments: [{ id: 0, equipment: { parameters: [{ id: 1, parameter: { pid: 525, value: options.singleSetpoint ? '1' : '0' } }] } }],
+    equipments: [{ id: 0, equipment: {
+      ...(options.parameter104 && Object.hasOwn(options.parameter104, 'equipType') ? { equipType: options.parameter104.equipType } : {}),
+      parameters: [{ id: 1, parameter: { pid: 525, value: options.singleSetpoint ? '1' : '0' } },
+        ...(options.parameter104 ? [{ id: 104, parameter: { pid: 104,
+          ...Object.fromEntries(Object.entries(options.parameter104).filter(([key]) => key !== 'equipType')) } }] : [])],
+    } }],
     devices: [{ id: 0, device: { serialNumber: options.serial ?? 'EMU-S40-001', productType: options.model ?? 'S40', softwareVersion: 'emulated-1.0' } }],
     schedules: [{ id: 0, schedule: { name: 'Weekday', periods: [] } }],
     occupancy: { manualAway: false, smartAway: { config: { enabled: false }, status: { state: 'disabled', setpointState: 'home' } } },
@@ -127,8 +132,19 @@ async function createEmulator(options = {}) {
   const sockets = new Set();
   const timers = new Set();
   let closed = false;
+  let parameterWritten = false;
 
-  function enqueue(session, data = state) {
+  function snapshot() {
+    const data = clone(state);
+    if (parameterWritten && options.omitParameterReadback) {
+      for (const equipment of data.equipments) {
+        equipment.equipment.parameters = equipment.equipment.parameters.filter(item => Number(item.parameter?.pid) !== 104);
+      }
+    }
+    return data;
+  }
+
+  function enqueue(session, data = snapshot()) {
     session.queue.push({
       MessageID: String(session.sequence++),
       SenderID: options.senderId ?? 'LCC',
@@ -211,7 +227,7 @@ async function createEmulator(options = {}) {
     if (!session && route !== 'unknown') return respond(401, { error: 'Unknown local connection' });
     if (route === 'requestData') {
       if (data.TargetID !== 'LCC' || data.MessageType !== 'RequestData') return respond(400, { error: 'Invalid RequestData' });
-      if (!options.noInitialData) enqueue(session);
+      if (!options.noInitialData && behavior?.snapshot !== false) enqueue(session, behavior?.snapshot ?? snapshot());
       return respond(204);
     }
     if (route === 'retrieve') {
@@ -221,6 +237,21 @@ async function createEmulator(options = {}) {
     if (route === 'publish') {
       if (data.TargetID !== 'LCC' || data.MessageType !== 'Command') return respond(400, { error: 'Invalid Command' });
       if (behavior?.status && ![200, 204].includes(behavior.status)) return respond(behavior.status);
+      const parameter = data.Data?.systemControl?.parameterUpdate;
+      if (parameter) {
+        if (data.AdditionalParameters !== '/systemControl' || parameter.pid !== 104 ||
+          typeof parameter.value !== 'string' || !/^[3-9]$/.test(parameter.value)) return respond(400, { code: 0 });
+        const equipment = state.equipments.find(item => item.equipment.equipType === parameter.et)?.equipment;
+        const reported = equipment?.parameters.find(item => item.parameter?.pid === 104)?.parameter;
+        if (!reported || reported.enabled !== true) return respond(403, { code: 0 });
+        const accepted = (behavior?.status ?? 200) === 200 && (behavior?.body === undefined || behavior.body?.code === 1);
+        if (accepted && !options.ignoreParameterCommands) {
+          reported.value = parameter.value;
+          parameterWritten = true;
+          for (const receiver of sessions.values()) enqueue(receiver);
+        }
+        return respond(200, { code: 1 });
+      }
       try { if (!options.ignoreCommands) publish(data.Data); } catch (error) { return respond(400, { error: error.message }); }
       return respond(204);
     }

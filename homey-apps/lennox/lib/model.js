@@ -57,6 +57,58 @@ function limits(zone, kind) {
   return { min, max, step: 0.5 };
 }
 
+function temperatureGap(system, zone) {
+  const c = zone.temperatureDeadbandC ?? system.hspCCspCSeparation;
+  const f = zone.temperatureDeadbandC != null ? Math.round(c * 9 / 5) : system.hspCspSeparation ?? Math.round(c * 9 / 5);
+  if (!finite(c) || c <= 0 || !finite(f) || f <= 0) throw Error('Thermostat temperature separation is unknown');
+  return { c, f };
+}
+
+function temperaturePair(zone, kind) {
+  const key = { heat: 'hsp', cool: 'csp', target: 'sp' }[kind];
+  const c = celsius(zone[key + 'C'], zone[key]);
+  const f = finite(zone[key]) ? zone[key] : finite(c) ? Math.round(c * 9 / 5 + 32) : undefined;
+  if (!finite(c) || !finite(f)) throw Error(`The current ${kind === 'target' ? 'temperature' : kind + 'ing'} target is unknown`);
+  return { c, f };
+}
+
+function withinFahrenheitLimits(zone, kind, f) {
+  const key = kind === 'heat' ? 'Hsp' : 'Csp';
+  return (!finite(zone['min' + key]) || f >= zone['min' + key]) && (!finite(zone['max' + key]) || f <= zone['max' + key]);
+}
+
+function effectiveTargetLimits(system, zone, kind) {
+  if (kind === 'target') {
+    const heat = limits(zone, 'heat'), cool = limits(zone, 'cool');
+    const min = Math.max(heat.min, cool.min), max = Math.min(heat.max, cool.max);
+    if (min >= max) throw Error('Thermostat temperature limits do not overlap');
+    return { min, max, step: 0.5 };
+  }
+  const range = limits(zone, kind), automatic = zone.systemMode === 'heat and cool';
+  const gap = automatic ? temperatureGap(system, zone) : null;
+  const opposite = automatic ? temperaturePair(zone, kind === 'heat' ? 'cool' : 'heat') : null;
+  const allowed = [];
+  for (let units = Math.ceil(range.min * 2); units <= Math.floor(range.max * 2); units++) {
+    const c = units / 2, f = Math.round(c * 9 / 5 + 32);
+    if (!withinFahrenheitLimits(zone, kind, f)) continue;
+    if (!automatic || (kind === 'heat' ? c + gap.c <= opposite.c && f + gap.f <= opposite.f : c - gap.c >= opposite.c && f - gap.f >= opposite.f)) allowed.push(c);
+  }
+  if (allowed.length < 2) throw Error('No adjustable temperature range remains while preserving the opposite target');
+  return { min: allowed[0], max: allowed[allowed.length - 1], step: 0.5 };
+}
+
+function resolveAdjustment(system, zone, command) {
+  if (!command || command.type !== 'adjust' || !['heat', 'cool', 'target'].includes(command.target) ||
+    ![-1, 1].includes(command.direction) || !['imperial', 'metric'].includes(command.units)) throw Error('Unsupported temperature adjustment');
+  const mode = MODES[zone.systemMode];
+  if (!mode || mode === 'off') throw Error('Select heating or cooling before adjusting the temperature');
+  if (system.singleSetpointMode ? command.target !== 'target' : command.target === 'target') throw Error('This temperature adjustment does not match the thermostat setpoint mode');
+  if (command.target !== 'target' && mode !== command.target && mode !== 'auto') throw Error('Use the temperature adjustment for the active thermostat mode');
+  const current = temperaturePair(zone, command.target);
+  const value = command.units === 'imperial' ? (Math.round(current.f) + command.direction - 32) * 5 / 9 : current.c + command.direction * 0.5;
+  return { type: command.target, value, units: command.units };
+}
+
 function candidate(system, zone, host) {
   const serial = system.serialNumber;
   if (typeof serial !== 'string' || !serial.trim() || !Number.isInteger(zone.id)) throw Error('Thermostat identity has not been received');
@@ -65,6 +117,14 @@ function candidate(system, zone, host) {
   if ('measure_humidity' in state) capabilities.push('measure_humidity');
   if ('fan_mode' in state) capabilities.push('fan_mode');
   const capabilitiesOptions = {};
+  const mode = MODES[zone.systemMode];
+  const knownSetpointMode = typeof system.singleSetpointMode === 'boolean';
+  let nativeTargets, adjustments;
+  if (system.singleSetpointMode === true) nativeTargets = [];
+  else if (system.singleSetpointMode === false && mode) nativeTargets = ['heat', 'cool']
+    .filter(type => (mode === type || mode === 'auto') && zone[type === 'heat' ? 'heatingOption' : 'coolingOption'] !== false)
+    .map(type => `target_temperature.${type}`);
+  if (knownSetpointMode && mode) adjustments = [];
   if (system.singleSetpointMode === true) {
     for (const type of ['heat', 'cool']) capabilitiesOptions[`target_temperature.${type}`] = { uiComponent: null };
   } else if (system.singleSetpointMode === false) capabilitiesOptions.target_temperature = { uiComponent: null };
@@ -81,9 +141,11 @@ function candidate(system, zone, host) {
     }
     if (!(type + '_target' in state)) continue;
     try {
-      const range = limits(zone, type);
+      const range = effectiveTargetLimits(system, zone, type);
       capabilitiesOptions[type + '_target'] = range;
-      capabilities.push(type + '_target', `target_temperature.${type}`, `measure_temperature.${type}`, `thermostat_mode.${type}`);
+      capabilities.push(type + '_target');
+      if (!nativeTargets?.includes(`target_temperature.${type}`)) continue;
+      capabilities.push(`target_temperature.${type}`, `measure_temperature.${type}`, `thermostat_mode.${type}`);
       capabilitiesOptions[`target_temperature.${type}`] = {
         ...range, title: { en: type === 'heat' ? 'Heating target' : 'Cooling target' },
         uiComponent: 'thermostat', preventInsights: true, preventTag: true,
@@ -93,20 +155,65 @@ function candidate(system, zone, host) {
         ...helperOptions, title: { en: type === 'heat' ? 'Heating temperature' : 'Cooling temperature' },
       };
       capabilitiesOptions[`thermostat_mode.${type}`] = helperOptions;
+      adjustments?.push(`${type}_decrease`, `${type}_increase`);
     } catch { /* readings remain usable before limits arrive */ }
   }
   // A single thermostat dial is ambiguous for a dual-setpoint system in auto.
   // Show the independent heat/cool controls instead of choosing one silently.
   if (system.singleSetpointMode && finite(state.target_temperature)) {
     try {
-      const heat = limits(zone, 'heat'), cool = limits(zone, 'cool');
-      capabilitiesOptions.target_temperature = { min: Math.max(heat.min, cool.min), max: Math.min(heat.max, cool.max), step: 0.5, uiComponent: 'thermostat' };
-      if (capabilitiesOptions.target_temperature.min < capabilitiesOptions.target_temperature.max) capabilities.push('target_temperature');
+      capabilitiesOptions.target_temperature = { ...effectiveTargetLimits(system, zone, 'target'), uiComponent: 'thermostat' };
+      capabilities.push('target_temperature');
+      if (mode && mode !== 'off') adjustments?.push('target_decrease', 'target_increase');
     } catch { /* no write control until known limits */ }
   }
+  for (const id of adjustments || []) { capabilities.push(id); capabilitiesOptions[id] = { uiComponent: 'button' }; }
   return { name: `${system.name || 'Lennox'} — ${zone.name || `Zone ${zone.id + 1}`}`,
     data: { id: `${serial}:${zone.id}` }, settings: { host: validateHost(host), read_only: true },
-    store: { serial, zoneId: zone.id }, capabilities, capabilitiesOptions };
+    store: { serial, zoneId: zone.id }, capabilities, capabilitiesOptions,
+    ...(system.hasTemperatureDeadband === true && Number.isInteger(system.hspCspSeparation) ? { changeoverGap: system.hspCspSeparation } : {}),
+    ...(nativeTargets === undefined ? {} : { nativeTargets }), ...(adjustments === undefined ? {} : { adjustments }) };
+}
+
+function deadbandLimits(parameter) {
+  if (!Number.isInteger(parameter?.valueF) || parameter.valueF < 3 || parameter.valueF > 9 || parameter.enabled !== true ||
+    !Number.isInteger(parameter.equipmentType) || parameter.equipmentType < 0) throw Error('The thermostat has not reported an editable automatic changeover gap');
+  if (parameter.descriptor !== 'range' || (parameter.unit !== undefined && parameter.unit !== 'F')) throw Error('The thermostat has not reported a Fahrenheit range for its automatic changeover gap');
+  const numeric = value => typeof value === 'number' ? value : typeof value === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()) ? Number(value) : NaN;
+  const min = numeric(parameter.range?.min), max = numeric(parameter.range?.max), step = numeric(parameter.range?.inc);
+  if (![min, max, step].every(finite) || min > max || step <= 0) throw Error('The thermostat automatic changeover gap range is incomplete or invalid');
+  const allowed = [];
+  for (let value = 3; value <= 9; value++) {
+    const steps = value / step;
+    if (value >= min && value <= max && Math.abs(steps - Math.round(steps)) < 1e-9) allowed.push(value);
+  }
+  if (!allowed.length) throw Error('The thermostat automatic changeover gap range does not allow a whole value from 3 to 9°F');
+  return { min: allowed[0], max: allowed[allowed.length - 1], step, origin: 0 };
+}
+
+function validateDeadbandParameter(value, parameter) {
+  if (!Number.isInteger(value) || value < 3 || value > 9) throw Error('Automatic changeover gap must be a whole number from 3 to 9°F');
+  const range = deadbandLimits(parameter), steps = (value - range.origin) / range.step;
+  if (value < range.min || value > range.max || Math.abs(steps - Math.round(steps)) >= 1e-9) {
+    throw Error(`Automatic changeover gap must follow the thermostat's reported range ${range.min}–${range.max}°F and step ${range.step}°F`);
+  }
+  return range;
+}
+
+function planDeadband(system, value, parameter) {
+  validateDeadbandParameter(value, parameter);
+  if (typeof system.singleSetpointMode !== 'boolean') throw Error('Thermostat setpoint mode is unknown');
+  const gapC = Math.round(value * 5 / 9 * 2) / 2;
+  const zones = system.zones.filter(zone => !zone.isZoneDisabled && (typeof zone.isZoneActive !== 'function' || zone.isZoneActive()));
+  for (const zone of zones) {
+    if (!MODES[zone.systemMode]) throw Error('Every active zone must report its operating mode before changing the controller-wide gap');
+    if (system.singleSetpointMode || zone.systemMode !== 'heat and cool') continue;
+    const heat = temperaturePair(zone, 'heat'), cool = temperaturePair(zone, 'cool');
+    if (heat.c + gapC > cool.c || heat.f + value > cool.f) {
+      throw Error(`The controller-wide gap cannot change to ${value}°F (${gapC}°C): automatic zone ${zone.name || zone.id + 1} has heating at ${heat.c}°C (${heat.f}°F) and cooling at ${cool.c}°C (${cool.f}°F). Adjust that zone's targets first.`);
+    }
+  }
+  return { valueF: value };
 }
 
 // Commands are partial protocol updates. The upstream full-period builder fills
@@ -126,12 +233,20 @@ function planCommand(system, zone, command) {
     if (!mode) throw Error('Unsupported thermostat mode');
     if ((value === 'heat' || value === 'auto') && zone.heatingOption !== true) throw Error('Heating is not supported');
     if ((value === 'cool' || value === 'auto') && zone.coolingOption !== true) throw Error('Cooling is not supported');
+    if (value === 'auto' && system.singleSetpointMode === false) {
+      const gap = temperatureGap(system, zone), heat = temperaturePair(zone, 'heat'), cool = temperaturePair(zone, 'cool');
+      if (heat.c + gap.c > cool.c || heat.f + gap.f > cool.f) {
+        throw Error(`Automatic mode requires heating and cooling targets separated by ${gap.c}°C (${gap.f}°F). Current heating is ${heat.c}°C (${heat.f}°F) and cooling is ${cool.c}°C (${cool.f}°F). Adjust the targets before selecting Automatic mode.`);
+      }
+    }
     period.systemMode = mode; expectedKey = 'thermostat_mode';
   } else if (type === 'fan') {
     if (!FAN_MODES.includes(value) || !FAN_MODES.includes(zone.fanMode)) throw Error('Unsupported fan mode');
     period.fanMode = value; expectedKey = 'fan_mode';
   } else if (['heat', 'cool', 'target'].includes(type)) {
     if (!finite(value)) throw Error('Temperature must be a finite number');
+    if (command.units !== undefined && !['imperial', 'metric'].includes(command.units)) throw Error('Unsupported temperature units');
+    if (!MODES[zone.systemMode]) throw Error('Thermostat operating mode is unknown. Wait for a fresh reading before changing temperature.');
     let kind = type;
     if (system.singleSetpointMode) {
       if (type !== 'target') throw Error('Use the single temperature target for this thermostat');
@@ -142,20 +257,32 @@ function planCommand(system, zone, command) {
     }
     if (kind === 'heat' && zone.heatingOption !== true || kind === 'cool' && zone.coolingOption !== true) throw Error('This temperature control is not supported');
     const ranges = kind === 'single' ? [limits(zone, 'heat'), limits(zone, 'cool')] : [limits(zone, kind)];
-    if (ranges.some(range => value < range.min || value > range.max)) throw Error('Temperature is outside the thermostat limits');
+    // A whole Fahrenheit boundary can convert just beyond its rounded Celsius
+    // representation. Validate imperial requests after protocol quantization;
+    // metric requests must still respect the original, unrounded boundary.
+    if (command.units !== 'imperial' && ranges.some(range => value < range.min || value > range.max)) throw Error('Temperature is outside the thermostat limits');
     const rounded = Math.round(value * 2) / 2;
     if (ranges.some(range => rounded < range.min || rounded > range.max)) throw Error('Rounded temperature is outside the thermostat limits');
-    const separation = zone.temperatureDeadbandC ?? system.hspCCspCSeparation;
-    if (kind !== 'single') {
-      if (!finite(separation) || separation <= 0) throw Error('Thermostat temperature separation is unknown');
-      const opposite = kind === 'heat' ? celsius(zone.cspC, zone.csp) : celsius(zone.hspC, zone.hsp);
-      if (!finite(opposite) || (kind === 'heat' ? rounded + separation > opposite : rounded - separation < opposite)) throw Error('Heating and cooling targets must retain their temperature separation');
+    const fahrenheit = Math.round(rounded * 9 / 5 + 32);
+    if (ranges.some((range, index) => !withinFahrenheitLimits(zone, kind === 'single' ? ['heat', 'cool'][index] : kind, fahrenheit))) throw Error('Temperature is outside the thermostat Fahrenheit limits');
+    if (kind !== 'single' && zone.systemMode === 'heat and cool') {
+      const gap = temperatureGap(system, zone), opposite = temperaturePair(zone, kind === 'heat' ? 'cool' : 'heat');
+      if (kind === 'heat' ? rounded + gap.c > opposite.c || fahrenheit + gap.f > opposite.f : rounded - gap.c < opposite.c || fahrenheit - gap.f < opposite.f) {
+        let allowed = '';
+        try {
+          const range = effectiveTargetLimits(system, zone, kind), limit = kind === 'heat' ? range.max : range.min;
+          allowed = ` ${kind === 'heat' ? 'Maximum heating' : 'Minimum cooling'} target is ${limit}°C (${Math.round(limit * 9 / 5 + 32)}°F).`;
+        } catch { /* the opposite target can leave no valid adjustable range */ }
+        throw Error(`Heating and cooling targets must retain their temperature separation of ${gap.c}°C (${gap.f}°F). The ${kind === 'heat' ? 'cooling' : 'heating'} target is ${opposite.c}°C (${opposite.f}°F).${allowed}`);
+      }
     }
     const key = { heat: 'hsp', cool: 'csp', single: 'sp' }[kind];
-    period[key + 'C'] = rounded; period[key] = Math.round(rounded * 9 / 5 + 32);
+    period[key + 'C'] = rounded; period[key] = fahrenheit;
     expectedKey = kind === 'single' ? 'target_temperature' : kind + '_target'; expectedValue = rounded;
+    return { data: { schedules: [{ id: scheduleId, schedule: { periods: [{ id: 0, period }] } }] }, expectedKey, expectedValue,
+      temperature: { key, celsius: rounded, fahrenheit, units: command.units ?? 'metric' } };
   } else throw Error('Unsupported thermostat command');
   return { data: { schedules: [{ id: scheduleId, schedule: { periods: [{ id: 0, period }] } }] }, expectedKey, expectedValue };
 }
 
-module.exports = { validateHost, normalizeZone, candidate, planCommand, limits };
+module.exports = { validateHost, normalizeZone, candidate, planCommand, planDeadband, deadbandLimits, validateDeadbandParameter, limits, effectiveTargetLimits, resolveAdjustment };

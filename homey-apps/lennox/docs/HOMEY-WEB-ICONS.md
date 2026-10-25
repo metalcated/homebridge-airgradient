@@ -22,6 +22,8 @@ The patched asset has SHA256:
 
 Nine individually guarded substitutions change icon metadata/rendering only. The transformation checks the original hash, requires each original fragment exactly once, parses the complete output as an ES module, and refuses to overwrite an input or existing output file. No complete vendor bundle is stored in this repository.
 
+If the separately approved [thermostat selection workaround](HOMEY-WEB-THERMOSTAT.md) is layered on top, its helper owns the current combined asset and must be rolled back first. The icon helper deliberately refuses to overwrite that later change. Rolling back the selection workaround restores the icon-patched hash above, after which the icon helper can restore the original vendor interface.
+
 ## Deployment and rollback
 
 The operational helper is `scripts/manage-homey-web-icons.py`, for the authorized `iot-mgmt` host. It targets only `homey-shs` and the exact reviewed web asset. It records the container/image identity, retains the original file and checksums outside the container, and atomically replaces the static asset while preserving ownership and permissions. Unexpected content or compressed variants cause it to stop.

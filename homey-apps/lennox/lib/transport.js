@@ -4,7 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const { randomBytes } = require('node:crypto');
 const { S30API } = require('lennoxapi');
-const { validateHost } = require('./model');
+const { validateHost, validateDeadbandParameter } = require('./model');
 const { IdentityTracker } = require('./identity');
 
 // Adapt the pinned parser/client rather than changing the global TLS or HTTP
@@ -32,6 +32,11 @@ class ManagedS30API extends S30API {
     // Track whether parameter 525 was actually reported. The upstream default
     // false alone cannot tell us which temperature mode the thermostat uses.
     this.hasSetpointMode = false;
+    this.hasTemperatureDeadband = false;
+    this.temperatureDeadbandRevision = 0;
+    this.temperatureDeadband = null;
+    this.deadbandEquipmentTypes = new Map();
+    this.deadbandParameters = new Map();
     this.identity = new IdentityTracker();
   }
 
@@ -78,6 +83,21 @@ class ManagedS30API extends S30API {
   get(url) { return this.request('GET', url); }
   post(url, body) { return this.request('POST', url, body); }
 
+  async publishTemperatureDeadband(sysId, value) {
+    const parameter = this.temperatureDeadband;
+    if (!this.hasTemperatureDeadband) throw Error('The thermostat has not reported an editable automatic changeover gap');
+    validateDeadbandParameter(value, parameter);
+    const message = { MessageType: 'Command', SenderID: this.applicationId, MessageID: this.getNextMessageId(),
+      TargetID: sysId, AdditionalParameters: '/systemControl',
+      Data: { systemControl: { parameterUpdate: { et: parameter.equipmentType, pid: 104, value: String(value) } } } };
+    const response = await this.post(this.urlPublish, JSON.stringify(message));
+    if (response.status !== 200) throw Error('The thermostat rejected the automatic changeover gap update');
+    let acknowledgement;
+    try { acknowledgement = JSON.parse(await response.text()); }
+    catch { throw Error('The thermostat returned an invalid automatic changeover gap acknowledgement'); }
+    if (acknowledgement?.code !== 1) throw Error('The thermostat did not acknowledge the automatic changeover gap update');
+  }
+
   processMessage(message) {
     if (!message || !message.Data || typeof message.Data !== 'object') return;
     const system = this.getSystem('LCC');
@@ -86,8 +106,29 @@ class ManagedS30API extends S30API {
     // A LAN sender can identify itself by serial number rather than LCC. Keep
     // every update on the initialized local system (fixed upstream after 0.1.2).
     for (const equipment of data.equipments || []) {
+      if (equipment.equipment && 'equipType' in equipment.equipment) {
+        const type = equipment.equipment.equipType;
+        this.deadbandEquipmentTypes.set(equipment.id, Number.isInteger(type) && type >= 0 ? type : undefined);
+      }
       for (const item of equipment.equipment?.parameters || []) {
         const parameter = item.parameter;
+        if (Number(parameter?.pid) === 104) {
+          const cached = this.deadbandParameters.get(equipment.id) || {};
+          if ('value' in parameter) {
+            const valid = [3, 4, 5, 6, 7, 8, 9, '3', '4', '5', '6', '7', '8', '9'].includes(parameter.value);
+            cached.valueF = valid ? Number(parameter.value) : null;
+            this.temperatureDeadbandRevision++;
+          }
+          if ('enabled' in parameter) cached.enabled = parameter.enabled === true;
+          for (const key of ['descriptor', 'unit']) if (key in parameter) cached[key] = parameter[key];
+          if ('range' in parameter) {
+            if (parameter.range && typeof parameter.range === 'object' && !Array.isArray(parameter.range)) {
+              cached.range = { ...cached.range };
+              for (const key of ['min', 'max', 'inc']) if (key in parameter.range) cached.range[key] = parameter.range[key];
+            } else cached.range = null;
+          }
+          this.deadbandParameters.set(equipment.id, cached);
+        }
         if (Number(parameter?.pid) !== 525) continue;
         if (![0, 1, '0', '1'].includes(parameter.value)) {
           this.hasSetpointMode = false;
@@ -100,6 +141,17 @@ class ManagedS30API extends S30API {
       }
     }
     system.processMessage(data);
+    if (this.deadbandParameters.size) {
+      const entries = [...this.deadbandParameters.entries()];
+      const [id, parameter] = entries.length === 1 ? entries[0] : [];
+      this.temperatureDeadband = parameter ? { ...parameter, equipmentType: this.deadbandEquipmentTypes.get(id) } : null;
+      this.hasTemperatureDeadband = Number.isInteger(this.temperatureDeadband?.valueF);
+      // Preserve the distinction between defaults and the controller's actual
+      // parameter. Multiple possible parameter owners are unsafe to edit.
+      system.hasTemperatureDeadband = this.hasTemperatureDeadband;
+      system.hspCspSeparation = this.hasTemperatureDeadband ? this.temperatureDeadband.valueF : null;
+      system.hspCCspCSeparation = this.hasTemperatureDeadband ? Math.round(this.temperatureDeadband.valueF * 5 / 9 * 2) / 2 : null;
+    }
     const identity = this.identity.update(data);
     system.serialNumber = identity.serial;
     if (identity.productType) system.productType = identity.productType;

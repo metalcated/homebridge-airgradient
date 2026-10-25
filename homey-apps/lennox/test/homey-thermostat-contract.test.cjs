@@ -10,7 +10,8 @@ const { candidate, normalizeZone } = require('../lib/model');
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../app.json'), 'utf8'));
 
 function fixture(mode = 'heat and cool', temperature = 22, single = false) {
-  const system = { serialNumber: 'EMU-UI-001', name: 'Emulated thermostat', singleSetpointMode: single };
+  const system = { serialNumber: 'EMU-UI-001', name: 'Emulated thermostat', singleSetpointMode: single,
+    hspCCspCSeparation: 1.5, hspCspSeparation: 3 };
   const zone = { id: 0, name: 'Living room', temperatureC: temperature, humidity: 43,
     temperatureStatus: 'good', humidityStatus: 'good', systemMode: mode, tempOperation: 'off', fanMode: 'auto',
     heatingOption: true, coolingOption: true, hspC: 20, cspC: 25, spC: 22,

@@ -1,6 +1,6 @@
 {
   "name": "homey-lennox-local",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Local Lennox iComfort thermostat integration for Homey",
   "main": "app.js",

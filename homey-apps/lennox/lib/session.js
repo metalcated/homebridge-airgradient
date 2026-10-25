@@ -1,7 +1,7 @@
 'use strict';
 
 const { ManagedS30API } = require('./transport');
-const { validateHost, normalizeZone, candidate, planCommand } = require('./model');
+const { validateHost, normalizeZone, candidate, planCommand, planDeadband, deadbandLimits, resolveAdjustment } = require('./model');
 const REFRESH_PATH = '1;/zones;/systemController;/systemControl;/equipments';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -51,11 +51,19 @@ class Session {
           hasTemperature: normalizeZone(system, zone).measure_temperature !== undefined,
           heat: zone.heatingOption, cool: zone.coolingOption,
           minHeat: zone.minHspC, maxHeat: zone.maxHspC, minCool: zone.minCspC, maxCool: zone.maxCspC })),
-        single: system.singleSetpointMode });
+        single: system.singleSetpointMode, separationF: system.hspCspSeparation,
+        separationC: system.hspCCspCSeparation, separationReported: api.hasTemperatureDeadband === true });
       if (catalog !== nextCatalog) { catalog = nextCatalog; catalogChangedAt = this.manager.now(); }
       if (usable && this.manager.now() - catalogChangedAt >= this.manager.catalogSettleMs) {
         this.readyState = true; this.lastData = this.manager.now(); this.lastRefresh = this.lastData;
         this.retryCount = 0;
+        let separationEditable = false, separationRange;
+        try { separationRange = deadbandLimits(api.temperatureDeadband); separationEditable = true; }
+        catch { /* a reported value alone does not authorize parameter writes */ }
+        this.manager.log('Lennox temperature policy', { mode: active[0]?.systemMode ?? null,
+          singleSetpoint: system.singleSetpointMode, separationF: system.hspCspSeparation ?? null,
+          separationC: system.hspCCspCSeparation ?? null, separationReported: api.hasTemperatureDeadband === true,
+          separationEditable, ...(separationRange ? { separationMinF: separationRange.min, separationMaxF: separationRange.max } : {}) });
         this.emit();
         return;
       }
@@ -167,22 +175,80 @@ class Session {
   async command(serial, zoneId, command) {
     await this.connect();
     let zone = this.zone(serial, zoneId);
+    if (command?.type === 'deadband') return this.changeDeadband(serial, zoneId, command.value);
     zone = await this.fresh(serial, zoneId);
     if (this.api.hasSetpointMode !== true && zone.setpointModeKnown !== true) throw Error('Thermostat configuration is incomplete. Wait for its setpoint mode before changing settings.');
-    const plan = planCommand(this.system, zone, command);
+    const resolved = command?.type === 'adjust' ? resolveAdjustment(this.system, zone, command) : command;
+    const plan = planCommand(this.system, zone, resolved);
     await this.api.publishMessage(this.system.sysId, plan.data);
     const until = this.manager.now() + this.manager.confirmTimeoutMs;
     do {
       zone = await this.fresh(serial, zoneId);
       const state = normalizeZone(this.system, zone);
       const value = state[plan.expectedKey];
-      if (typeof value === 'number' ? Math.abs(value - plan.expectedValue) < 0.26 : value === plan.expectedValue) {
+      let confirmed = value === plan.expectedValue;
+      if (plan.temperature) {
+        const actualC = zone[plan.temperature.key + 'C'], actualF = zone[plan.temperature.key];
+        const hasC = typeof actualC === 'number' && Number.isFinite(actualC);
+        const hasF = typeof actualF === 'number' && Number.isFinite(actualF);
+        if (plan.temperature.units === 'imperial') {
+          // Fahrenheit-configured firmware can echo an exact conversion rather
+          // than the half-degree Celsius representation that we published.
+          confirmed = (hasC || hasF) && (!hasF || actualF === plan.temperature.fahrenheit) &&
+            (!hasC || Math.round(actualC * 9 / 5 + 32) === plan.temperature.fahrenheit);
+        } else {
+          // Metric requests must still match the requested half-degree grid;
+          // accepting the neighbouring Celsius step would misreport success.
+          confirmed = (hasC ? Math.round(actualC * 2) / 2 === plan.temperature.celsius : hasF) &&
+            (!hasF || Math.round(actualF) === plan.temperature.fahrenheit);
+        }
+      }
+      if (confirmed) {
         this.emit(); return state;
       }
       await this.manager.sleep(this.manager.pollMs);
     } while (!this.stopped && this.manager.now() < until);
     this.emit();
     throw Error('The thermostat did not confirm this change. Check its active schedule or away settings before retrying.');
+  }
+
+  async freshDeadband(serial, zoneId, allZones) {
+    if (typeof this.api.temperatureDeadbandRevision !== 'number' || !this.api.periodRevisions) throw Error('This thermostat connection cannot confirm automatic changeover gap changes');
+    const parameterRevision = this.api.temperatureDeadbandRevision;
+    const revisions = new Map(this.api.periodRevisions);
+    await this.api.requestDataHelper(this.system.sysId, REFRESH_PATH);
+    const until = this.manager.now() + this.manager.confirmTimeoutMs;
+    do {
+      await this.api.messagePump();
+      this.noteData();
+      this.zone(serial, zoneId);
+      const active = this.system.zones.filter(item => !item.isZoneDisabled && (typeof item.isZoneActive !== 'function' || item.isZoneActive()));
+      const freshZones = !allZones || active.every(item => (this.api.periodRevisions.get(item.id) ?? 0) > (revisions.get(item.id) ?? 0));
+      if (this.api.temperatureDeadbandRevision > parameterRevision && freshZones) {
+        this.lastData = this.manager.now();
+        return this.api.temperatureDeadband;
+      }
+      await this.manager.sleep(this.manager.pollMs);
+    } while (!this.stopped && this.manager.now() < until);
+    throw Error('No fresh automatic changeover gap and active-zone configuration was received; nothing was confirmed');
+  }
+
+  async changeDeadband(serial, zoneId, value) {
+    await this.freshDeadband(serial, zoneId, true);
+    const zone = this.zone(serial, zoneId);
+    if (this.api.hasSetpointMode !== true && zone.setpointModeKnown !== true) throw Error('Thermostat configuration is incomplete. Wait for its setpoint mode before changing settings.');
+    const plan = planDeadband(this.system, value, this.api.temperatureDeadband);
+    await this.api.publishTemperatureDeadband(this.system.sysId, plan.valueF);
+    const until = this.manager.now() + this.manager.confirmTimeoutMs;
+    do {
+      const parameter = await this.freshDeadband(serial, zoneId, false);
+      if (this.api.hasTemperatureDeadband === true && parameter?.valueF === plan.valueF) {
+        this.emit(); return normalizeZone(this.system, this.zone(serial, zoneId));
+      }
+      await this.manager.sleep(this.manager.pollMs);
+    } while (!this.stopped && this.manager.now() < until);
+    this.emit();
+    throw Error('The thermostat did not confirm the controller-wide automatic changeover gap change');
   }
 
   async close() {

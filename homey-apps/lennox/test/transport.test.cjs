@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { ManagedS30API } = require('../lib/transport');
 const { SessionManager } = require('../lib/session');
+const { planCommand } = require('../lib/model');
 const { createEmulator } = require('./emulator.cjs');
 
 async function fixture(t, options = {}) {
@@ -350,4 +351,83 @@ test('partial fan reports do not refresh cached temperature or complete operatin
   assert.equal(api.periodRevisions.get(0), initial.period + 1);
   assert.equal(api.temperatureRevisions.get(0), initial.temperature + 1, 'A full period still does not refresh a silent temperature sensor');
   assert.equal(api.temperatureRevisions.get(1), initial.temperature, 'One zone cannot refresh another zone');
+});
+
+test('parameter 104 decodes reported Fahrenheit separation, rejects malformed values and recovers on a later valid report', async t => {
+  const { api, emulator } = await fixture(t);
+  const system = await connect(api);
+  const report = async value => {
+    emulator.enqueue({ equipments: [{ id: 0, equipment: { parameters: [{ id: 104, parameter: { pid: '104', value } }] } }] });
+    await api.messagePump();
+  };
+  for (const value of [3, '3', 4, '6', 9, '9']) {
+    await report(value);
+    assert.equal(system.hspCspSeparation, Number(value));
+    assert.equal(system.hspCCspCSeparation, Math.round(Number(value) * 5 / 9 * 2) / 2);
+  }
+  const lastValueRevision = api.temperatureDeadbandRevision;
+  await report(undefined);
+  assert.equal(system.hspCspSeparation, 9, 'An absent value is a metadata fragment and preserves the last actual report');
+  assert.equal(api.temperatureDeadbandRevision, lastValueRevision, 'A metadata fragment cannot confirm a parameter write');
+  for (const value of [null, '', '03', '3.0', 2, 10, 3.5, true, {}, 'invalid']) {
+    await report(value);
+    assert.equal(system.hspCspSeparation, null);
+    assert.equal(system.hspCCspCSeparation, null);
+    assert.throws(() => planCommand(system, system.getZone(0), { type: 'heat', value: 21 }), /separation is unknown/);
+  }
+  await report('3');
+  assert.equal(system.hspCspSeparation, 3);
+  assert.equal(system.hspCCspCSeparation, 1.5);
+  assert.equal(planCommand(system, system.getZone(0), { type: 'heat', value: 21 }).temperature.fahrenheit, 70);
+  assert.equal(emulator.events.filter(event => event.route === 'publish').length, 0);
+});
+
+test('parameter metadata fragments preserve their real owner without becoming a fresh value report and ambiguous owners fail closed', async t => {
+  const { api, emulator } = await fixture(t, { emulator: { parameter104: {
+    value: '4', enabled: false, equipType: 7, descriptor: 'range', unit: 'F', range: { min: '3', max: '9', inc: '1' },
+  } } });
+  const system = await connect(api);
+  const revision = api.temperatureDeadbandRevision;
+  assert.equal(api.temperatureDeadband.equipmentType, 7);
+  assert.equal(api.temperatureDeadband.enabled, false);
+  emulator.enqueue({ equipments: [{ id: 0, equipment: { parameters: [{ id: 104, parameter: { pid: 104, enabled: true } }] } }] });
+  await api.messagePump();
+  assert.equal(api.temperatureDeadband.valueF, 4);
+  assert.equal(api.temperatureDeadband.enabled, true);
+  assert.equal(api.temperatureDeadband.equipmentType, 7, 'The outer equipment ID must never replace the actual equipType');
+  assert.equal(api.temperatureDeadbandRevision, revision);
+  emulator.enqueue({ zones: [{ id: 0, status: { period: { systemMode: 'heat', fanMode: 'auto', hspC: 20, cspC: 25 } } }] });
+  await api.messagePump();
+  assert.equal(api.temperatureDeadbandRevision, revision, 'A fresh operating period cannot confirm this controller parameter');
+  emulator.enqueue({ equipments: [{ id: 0, equipment: { parameters: [{ id: 104, parameter: { pid: 104, value: '5' } }] } }] });
+  await api.messagePump();
+  assert.equal(api.temperatureDeadbandRevision, revision + 1);
+  assert.equal(api.temperatureDeadband.valueF, 5);
+  assert.equal(api.temperatureDeadband.enabled, true);
+  assert.equal(api.temperatureDeadband.equipmentType, 7);
+  emulator.enqueue({ equipments: [{ id: 8, equipment: { equipType: 19,
+    parameters: [{ id: 104, parameter: { pid: 104, value: '3', enabled: true } }] } }] });
+  await api.messagePump();
+  assert.equal(api.temperatureDeadband, null);
+  assert.equal(api.hasTemperatureDeadband, false);
+  assert.equal(system.hasTemperatureDeadband, false);
+  await assert.rejects(api.publishTemperatureDeadband('LCC', 4), /editable/);
+  assert.equal(emulator.events.filter(event => event.route === 'publish').length, 0);
+});
+
+test('two rapid relative Fahrenheit commands use actual readback and preserve the cooling target over HTTP', async () => {
+  const emulator = await createEmulator();
+  const manager = new SessionManager({ pollMs: 5, drainMs: 5, catalogSettleMs: 10,
+    connectTimeoutMs: 1000, confirmTimeoutMs: 200,
+    clientFactory: () => new ManagedS30API({ host: emulator.host, port: emulator.port,
+      protocol: emulator.protocol, requestTimeoutMs: 500 }) });
+  try {
+    await Promise.all([1, 2].map(() => manager.command(emulator.host, 'EMU-S40-001', 0,
+      { type: 'adjust', target: 'heat', direction: 1, units: 'imperial' }, false)));
+    const writes = emulator.events.filter(event => event.route === 'publish');
+    assert.deepEqual(writes.map(event => event.data.Data.schedules[0].schedule.periods[0].period.hsp), [69, 70]);
+    assert.equal(emulator.state.zones[0].status.period.csp, 77);
+    assert.equal(emulator.state.zones[0].status.period.cspC, 25);
+    assert.equal(emulator.state.zones[1].status.period.hsp, 68);
+  } finally { await manager.close(); await emulator.close(); }
 });

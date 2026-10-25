@@ -13,7 +13,8 @@ const supported = ['measure_temperature', 'thermostat_mode', 'hvac_state', 'heat
 const candidate = host => ({ name: 'Living room', data: { id: 'serial123:0' }, settings: { host, read_only: true }, store: { serial: 'serial123', zoneId: 0 }, capabilities: supported });
 
 function thermostatMetadata({ single = false, mode = 'heat and cool', zoneOverrides = {} } = {}) {
-  const system = { serialNumber: 'serial123', name: 'Living room', singleSetpointMode: single };
+  const system = { serialNumber: 'serial123', name: 'Living room', singleSetpointMode: single,
+    hspCCspCSeparation: 1.5, hspCspSeparation: 3 };
   const zone = { id: 0, name: 'Main zone', temperatureC: 21, humidity: 43,
     temperatureStatus: 'good', humidityStatus: 'good', systemMode: mode, tempOperation: 'off', fanMode: 'auto',
     heatingOption: true, coolingOption: true, hspC: 20, cspC: 25, spC: 22,
@@ -50,7 +51,8 @@ class Entity {
 class Device extends Entity {
   constructor(sessions) {
     super();
-    this.settings = { host: '192.0.2.10', read_only: true };
+    this.settings = { host: '192.0.2.10', read_only: true, temperature_control_units: 'metric' };
+    this.settingWrites = [];
     this.store = { serial: 'serial123', zoneId: 0 };
     this.capabilities = [...supported];
     this.values = {};
@@ -58,13 +60,16 @@ class Device extends Entity {
     this.optionUpdates = [];
     this.removedCapabilities = [];
     this.listeners = new Map();
+    this.listenerRegistrations = [];
+    this.sdkUnits = 'metric';
     this.available = true;
-    this.homey = { app: { sessions } };
+    this.homey = { app: { sessions }, i18n: { getUnits: () => this.sdkUnits } };
   }
   getSetting(key) { return this.settings[key]; }
   getSettings() { return this.settings; }
   async setSettings(settings) {
     if (this.settingsError) throw this.settingsError;
+    this.settingWrites.push(JSON.parse(JSON.stringify(settings)));
     Object.assign(this.settings, settings);
   }
   getStoreValue(key) { return this.store[key]; }
@@ -82,7 +87,7 @@ class Device extends Entity {
     this.capabilityOptions[capability] = JSON.parse(JSON.stringify(options));
     this.optionUpdates.push(capability);
   }
-  registerCapabilityListener(capability, callback) { this.listeners.set(capability, callback); }
+  registerCapabilityListener(capability, callback) { this.listeners.set(capability, callback); this.listenerRegistrations.push(capability); }
   async setCapabilityValue(capability, value) {
     if (this.updateGate) await this.updateGate(capability);
     this.values[capability] = value;
@@ -224,7 +229,7 @@ test('fragmented metadata adds later controls and updates their limits without r
   await device.onUninit();
 });
 
-test('single/dual mode switches request UI overrides and neutralize retained groups while preserving legacy IDs, history and Flows', async () => {
+test('single/dual mode switches remove only derived native targets and preserve legacy IDs, history and Flows', async () => {
   const { device, sessions } = await deviceFixture();
   const connection = sessions.connections[0];
   const dual = thermostatMetadata();
@@ -238,19 +243,21 @@ test('single/dual mode switches request UI overrides and neutralize retained gro
   connection.onState(single.state, single.candidate);
   await device._updates;
   assert.equal(device.hasCapability('target_temperature'), true);
-  for (const capability of originalIds) assert.equal(device.hasCapability(capability), true, `Preserve ${capability}`);
+  for (const capability of originalIds.filter(id => !/^target_temperature\.(heat|cool)$/.test(id))) {
+    assert.equal(device.hasCapability(capability), true, `Preserve ${capability}`);
+  }
   assert.equal(device.values.heat_target, 20);
   assert.equal(device.values.cool_target, 25);
   assert.equal(device.listeners.has('heat_target'), true);
   assert.equal(device.capabilityOptions.target_temperature.uiComponent, 'thermostat');
-  assert.equal(device.capabilityOptions['target_temperature.heat'].uiComponent, null);
-  assert.equal(device.capabilityOptions['target_temperature.cool'].uiComponent, null);
+  assert.equal(device.hasCapability('target_temperature.heat'), false);
+  assert.equal(device.hasCapability('target_temperature.cool'), false);
   assert.equal(device.values['thermostat_mode.heat'], 'off');
   assert.equal(device.values['thermostat_mode.cool'], 'off');
   assert.equal(device.values['measure_temperature.heat'], device.values.measure_temperature);
   assert.equal(device.values['measure_temperature.cool'], device.values.measure_temperature);
-  assert.equal(device.values['target_temperature.heat'], 20);
-  assert.equal(device.values['target_temperature.cool'], 25);
+  assert.equal(device.values['target_temperature.heat'], undefined);
+  assert.equal(device.values['target_temperature.cool'], undefined);
   await assert.rejects(device.listeners.get('target_temperature')(23), /Read-only/);
   assert.equal(sessions.commands.at(-1)[3].type, 'target');
   connection.onState({ measure_temperature: 22 }, { ...candidate('192.0.2.10'), capabilities: ['measure_temperature'], capabilitiesOptions: {} });
@@ -259,7 +266,7 @@ test('single/dual mode switches request UI overrides and neutralize retained gro
   assert.equal(device.hasCapability('target_temperature'), true);
   assert.equal(device.hasCapability('measure_humidity'), true);
   assert.equal(device.values.measure_humidity, 43);
-  assert.equal(device.capabilityOptions['target_temperature.heat'].uiComponent, null);
+  assert.equal(device.hasCapability('target_temperature.heat'), false);
   connection.onState(dual.state, dual.candidate);
   await device._updates;
   assert.equal(device.hasCapability('target_temperature'), true);
@@ -271,7 +278,8 @@ test('single/dual mode switches request UI overrides and neutralize retained gro
   assert.equal(device.hasCapability('cool_target'), true);
   await assert.rejects(device.listeners.get('heat_target')(21), /Read-only/);
   assert.equal(sessions.commands.at(-1)[3].type, 'heat');
-  assert.deepEqual(device.removedCapabilities, []);
+  assert.ok(device.removedCapabilities.every(id => /^target_temperature\.(heat|cool)$/.test(id)));
+  assert.equal(device.listenerRegistrations.filter(id => id === 'target_temperature.heat').length, 2);
   assert.equal(device.getData().id, 'serial123:0');
   assert.equal(device.getSetting('read_only'), true);
   await device.onUninit();
@@ -298,7 +306,7 @@ test('native target listeners are registered for existing devices and later meta
       assert.equal(device.values[capability], type === 'heat' ? 20 : 25);
       sessions.commandError = null;
       await device.listeners.get(capability)(value);
-      assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type, value });
+      assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type, value, units: 'metric' });
       assert.equal(sessions.commands.at(-1)[4], false);
       device.settings.read_only = true;
     }
@@ -312,7 +320,34 @@ test('native target listeners are registered for existing devices and later meta
   }
 });
 
-test('explicitly unsupported cooling requests a UI override and clears direction while preserving legacy values and partial metadata', async () => {
+test('native drag listeners carry the explicit control units while retained legacy controls keep their Celsius command contract', async () => {
+  for (const single of [false, true]) {
+    const { device, sessions } = await deviceFixture();
+    const metadata = thermostatMetadata({ single });
+    sessions.connections[0].onState(metadata.state, metadata.candidate);
+    await device._updates;
+    device.settings.read_only = false;
+    const targets = single ? [['target_temperature', 'target']] : [['target_temperature.heat', 'heat'], ['target_temperature.cool', 'cool']];
+    for (const units of ['imperial', 'metric']) {
+      device.settings.temperature_control_units = units;
+      for (const [capability, type] of targets) {
+        await device.listeners.get(capability)(22.5);
+        assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type, value: 22.5, units });
+      }
+    }
+    device.settings.temperature_control_units = 'unknown';
+    const before = sessions.commands.length;
+    for (const [capability] of targets) await assert.rejects(device.listeners.get(capability)(22.5), /units|Fahrenheit|Celsius/i);
+    assert.equal(sessions.commands.length, before, 'Unknown configured units must reject before contacting the controller');
+    for (const [capability, type] of [['heat_target', 'heat'], ['cool_target', 'cool']]) {
+      await device.listeners.get(capability)(22.5);
+      assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type, value: 22.5 });
+    }
+    await device.onUninit();
+  }
+});
+
+test('explicitly unsupported cooling prunes only its derived target and preserves legacy values and partial metadata', async () => {
   const { device, sessions } = await deviceFixture();
   const connection = sessions.connections[0];
   const original = thermostatMetadata({ zoneOverrides: { temperatureC: 23, hspC: 18, cspC: 22 } });
@@ -330,18 +365,142 @@ test('explicitly unsupported cooling requests a UI override and clears direction
   const heatOnly = thermostatMetadata({ mode: 'heat', zoneOverrides: { temperatureC: 23, coolingOption: false, cspC: 22 } });
   connection.onState(heatOnly.state, heatOnly.candidate);
   await device._updates;
-  assert.equal(device.capabilityOptions['target_temperature.cool'].uiComponent, null);
+  assert.equal(device.hasCapability('target_temperature.cool'), false);
   assert.equal(device.values['thermostat_mode.cool'], 'off');
-  assert.equal(device.values['target_temperature.cool'], 22);
+  assert.equal(device.values['target_temperature.cool'], undefined);
   assert.equal(device.values.cool_target, 22);
   assert.equal(device.values['measure_temperature.cool'], 23);
-  for (const capability of originalIds) assert.equal(device.hasCapability(capability), true);
-  assert.deepEqual(device.removedCapabilities, []);
+  for (const capability of originalIds.filter(id => id !== 'target_temperature.cool')) assert.equal(device.hasCapability(capability), true);
+  assert.deepEqual(device.removedCapabilities, ['target_temperature.cool']);
   assert.equal(device.getSetting('read_only'), true);
   connection.onState(original.state, original.candidate);
   await device._updates;
   assert.equal(device.capabilityOptions['target_temperature.cool'].uiComponent, 'thermostat');
   assert.equal(device.values['thermostat_mode.cool'], 'cool');
+  assert.equal(device.values['target_temperature.cool'], 22);
+  await device.onUninit();
+});
+
+test('authoritative heat/cool/automatic/off lists prune only native targets and partial metadata preserves them', async () => {
+  const { device, sessions } = await deviceFixture();
+  const connection = sessions.connections[0];
+  for (const [mode, expected] of [['heat and cool', ['heat', 'cool']], ['heat', ['heat']], ['cool', ['cool']], ['off', []], ['heat and cool', ['heat', 'cool']]]) {
+    const data = thermostatMetadata({ mode });
+    connection.onState(data.state, data.candidate);
+    await device._updates;
+    for (const type of ['heat', 'cool']) assert.equal(device.hasCapability(`target_temperature.${type}`), expected.includes(type), mode);
+    for (const id of ['heat_target', 'cool_target', 'measure_temperature', 'measure_temperature.heat', 'measure_temperature.cool']) {
+      assert.equal(device.hasCapability(id), true, `Preserve ${id} in ${mode}`);
+    }
+  }
+  connection.onState({ measure_temperature: 24 }, { capabilities: ['measure_temperature'] });
+  await device._updates;
+  assert.equal(device.hasCapability('target_temperature.heat'), true);
+  assert.equal(device.hasCapability('target_temperature.cool'), true);
+  assert.ok(device.removedCapabilities.every(id => /^target_temperature\.(heat|cool)$/.test(id)));
+  await device.onUninit();
+  const reopened = new LennoxDevice(sessions);
+  reopened.capabilities = [...device.capabilities];
+  reopened.values = { ...device.values };
+  await reopened.onInit();
+  for (const type of ['heat', 'cool']) assert.equal(typeof reopened.listeners.get(`target_temperature.${type}`), 'function');
+  await reopened.onUninit();
+});
+
+test('stateless plus/minus listeners use explicit control units and the existing read-only/error path', async () => {
+  const { device, sessions } = await deviceFixture();
+  const data = thermostatMetadata();
+  sessions.connections[0].onState(data.state, data.candidate);
+  await device._updates;
+  for (const [id, target, direction] of [['heat_increase', 'heat', 1], ['heat_decrease', 'heat', -1], ['cool_increase', 'cool', 1], ['cool_decrease', 'cool', -1]]) {
+    const listener = device.listeners.get(id);
+    assert.equal(typeof listener, 'function');
+    await assert.rejects(listener(true), /Read-only/);
+    assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type: 'adjust', target, direction, units: 'metric' });
+    device.settings.read_only = false;
+    device.settings.temperature_control_units = 'imperial';
+    sessions.commandError = Error('Thermostat rejected the adjustment');
+    await assert.rejects(listener(true), /rejected the adjustment/);
+    assert.equal(sessions.commands.at(-1)[4], false);
+    assert.equal(sessions.commands.at(-1)[3].units, 'imperial');
+    sessions.commandError = null;
+    await listener(true);
+    assert.equal(device.values[id], undefined, 'A button must not become a stored on/off state');
+    const count = sessions.commands.length;
+    await assert.rejects(listener(false), /Press the temperature adjustment button/);
+    device.settings.temperature_control_units = 'unknown';
+    await assert.rejects(listener(true), /units|Fahrenheit|Celsius/i);
+    assert.equal(sessions.commands.length, count);
+    device.settings.read_only = true;
+    device.settings.temperature_control_units = 'metric';
+  }
+  const heatOnly = thermostatMetadata({ mode: 'heat' });
+  sessions.connections[0].onState(heatOnly.state, heatOnly.candidate);
+  await device._updates;
+  assert.equal(device.capabilityOptions.cool_increase.uiComponent, null);
+  assert.equal(device.hasCapability('cool_increase'), true, 'Inactive buttons retain their IDs');
+  assert.equal(device.capabilityOptions.heat_increase.uiComponent, 'button');
+  await device.onUninit();
+});
+
+test('control-unit setting changes update only native presentation steps while legacy Celsius Flows retain half-degree steps', async () => {
+  const { device, sessions } = await deviceFixture();
+  const data = thermostatMetadata();
+  const connection = sessions.connections[0];
+  for (const [units, step] of [['metric', 0.5], ['imperial', 1], ['metric', 0.5]]) {
+    device.settings.temperature_control_units = units;
+    connection.onState(data.state, data.candidate);
+    await device._updates;
+    for (const type of ['heat', 'cool']) {
+      assert.equal(device.capabilityOptions[`target_temperature.${type}`].step, step);
+      assert.equal(device.capabilityOptions[`${type}_target`].step, 0.5);
+      assert.equal(device.values[`target_temperature.${type}`], type === 'heat' ? 20 : 25, 'The app keeps Celsius values for Homey to convert');
+    }
+  }
+  await device.onUninit();
+});
+
+test('explicit control units override contradictory SDK units, legacy devices default to Fahrenheit and saving units never writes hardware', async () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  const setting = manifest.drivers[0].settings.find(item => item.id === 'temperature_control_units');
+  assert.equal(setting.type, 'dropdown');
+  assert.equal(setting.value, 'imperial');
+  assert.deepEqual(setting.values.map(item => item.id).sort(), ['imperial', 'metric']);
+  const { device, sessions } = await deviceFixture();
+  const metadata = thermostatMetadata();
+  const connection = sessions.connections[0];
+  delete device.settings.temperature_control_units;
+  assert.equal(device.homey.i18n.getUnits(), 'metric', 'The fixture reproduces the verified SDK-only metric value');
+  connection.onState(metadata.state, metadata.candidate);
+  await device._updates;
+  assert.equal(device.capabilityOptions['target_temperature.heat'].step, 1, 'An existing device without this setting must use the documented Fahrenheit fallback');
+  device.settings.read_only = false;
+  await device.listeners.get('heat_increase')(true);
+  assert.equal(sessions.commands.at(-1)[3].units, 'imperial');
+  await device.listeners.get('target_temperature.heat')(21);
+  assert.equal(sessions.commands.at(-1)[3].units, 'imperial');
+  const before = sessions.commands.length;
+  const edited = { ...device.settings, temperature_control_units: 'metric' };
+  await device.onSettings({ newSettings: edited, changedKeys: ['temperature_control_units'] });
+  assert.equal(sessions.commands.length, before, 'Changing the local control-unit preference must not issue a thermostat command');
+  assert.equal(sessions.connections.length, 1);
+  assert.equal(connection.removed, false);
+  assert.equal(sessions.inspections.length, 0);
+  Object.assign(device.settings, edited); // Homey persists accepted local settings after the callback.
+  device.sdkUnits = 'imperial';
+  connection.onState(metadata.state, metadata.candidate);
+  await device._updates;
+  assert.equal(device.capabilityOptions['target_temperature.heat'].step, 0.5);
+  await device.listeners.get('heat_increase')(true);
+  assert.equal(sessions.commands.at(-1)[3].units, 'metric');
+  await device.listeners.get('target_temperature.heat')(21);
+  assert.equal(sessions.commands.at(-1)[3].units, 'metric');
+  const count = sessions.commands.length;
+  for (const value of ['unknown', 'F', null, 4, undefined]) {
+    await assert.rejects(device.onSettings({ newSettings: { ...device.settings, temperature_control_units: value }, changedKeys: ['temperature_control_units'] }));
+  }
+  assert.equal(sessions.commands.length, count);
+  assert.equal(device.getSetting('temperature_control_units'), 'metric');
   await device.onUninit();
 });
 
@@ -377,6 +536,81 @@ test('invalid setting edits and different thermostat identities preserve the liv
   sessions.connections[0].onState({ measure_temperature: 21 });
   await device._updates;
   assert.equal(device.values.measure_temperature, 21);
+  await device.onUninit();
+});
+
+test('the Advanced gap setting reflects only confirmed reports without writing during install, monitoring or reopening', async () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'app.json'), 'utf8'));
+  const setting = manifest.drivers[0].settings.find(item => item.id === 'auto_changeover_gap');
+  assert.equal(setting.type, 'number');
+  assert.equal(setting.min, 3);
+  assert.equal(setting.max, 9);
+  assert.equal(setting.step, 1);
+  assert.equal(setting.units.en, '°F', 'This controller parameter uses Fahrenheit in either Homey display unit system');
+  const { device, sessions } = await deviceFixture();
+  device.settings.auto_changeover_gap = 3;
+  assert.equal(sessions.commands.length, 0);
+  const metadata = thermostatMetadata();
+  const connection = sessions.connections[0];
+  connection.onState(metadata.state, { ...metadata.candidate, changeoverGap: 4 });
+  await device._updates;
+  assert.equal(device.getSetting('auto_changeover_gap'), 4);
+  assert.deepEqual(device.settingWrites, [{ auto_changeover_gap: 4 }]);
+  for (const value of [4, undefined, null, 2, 10, 3.5, '5']) {
+    connection.onState(metadata.state, { ...metadata.candidate, changeoverGap: value });
+    await device._updates;
+  }
+  assert.equal(device.settingWrites.length, 1, 'Unchanged, absent or malformed reports must not rewrite settings');
+  connection.onState(metadata.state, { ...metadata.candidate, changeoverGap: 5 });
+  await device._updates;
+  assert.equal(device.getSetting('auto_changeover_gap'), 5);
+  assert.equal(device.getSetting('read_only'), true);
+  assert.equal(sessions.commands.length, 0);
+  await device.onUninit();
+  const reopened = new LennoxDevice(sessions);
+  reopened.settings = { ...device.settings };
+  await reopened.onInit();
+  assert.equal(reopened.getSetting('auto_changeover_gap'), 5);
+  assert.equal(sessions.commands.length, 0);
+  assert.equal(reopened.settingWrites.length, 0);
+  await reopened.onUninit();
+});
+
+test('editing a gap requires a previously saved writable setting and rejects combined host changes before side effects', async () => {
+  const { device, sessions } = await deviceFixture();
+  device.settings.auto_changeover_gap = 3;
+  const save = (updates, changedKeys = ['auto_changeover_gap']) => device.onSettings({ newSettings: { ...device.settings, ...updates }, changedKeys });
+  await assert.rejects(save({ read_only: false, auto_changeover_gap: 4 }), /Read-only mode disabled/);
+  assert.equal(sessions.commands.length, 0);
+  await save({ read_only: false }, ['read_only']);
+  assert.equal(sessions.commands.length, 0, 'Saving permission alone must not write a controller parameter');
+  device.settings.read_only = false; // Homey persists accepted user settings after onSettings returns.
+  await assert.rejects(save({ read_only: true, auto_changeover_gap: 4 }), /Read-only mode disabled/);
+  for (const value of [2, 10, 3.5, '4', null]) await assert.rejects(save({ auto_changeover_gap: value }));
+  await assert.rejects(save({ host: '192.0.2.20', auto_changeover_gap: 4 }, ['host', 'auto_changeover_gap']), /separately/);
+  assert.equal(sessions.commands.length, 0);
+  assert.equal(sessions.inspections.length, 0);
+  assert.equal(sessions.connections.length, 1);
+  assert.equal(sessions.connections[0].removed, false);
+  assert.equal(device.getSetting('auto_changeover_gap'), 3);
+  await device.onUninit();
+});
+
+test('a failed gap edit retains the saved value and a retry uses the same confirmed command path', async () => {
+  const { device, sessions } = await deviceFixture();
+  device.settings = { ...device.settings, read_only: false, auto_changeover_gap: 3 };
+  const edited = { ...device.settings, auto_changeover_gap: 4 };
+  sessions.commandError = Error('The thermostat did not confirm this change');
+  await assert.rejects(device.onSettings({ newSettings: edited, changedKeys: ['auto_changeover_gap'] }), /did not confirm/);
+  assert.equal(device.getSetting('auto_changeover_gap'), 3);
+  assert.equal(device.settingWrites.length, 0, 'A failed user edit must not be persisted programmatically');
+  sessions.commandError = null;
+  await device.onSettings({ newSettings: edited, changedKeys: ['auto_changeover_gap'] });
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])), { type: 'deadband', value: 4 });
+  assert.equal(sessions.commands.at(-1)[4], false);
+  Object.assign(device.settings, edited); // Simulate Homey's persistence after the successful callback.
+  await device.onSettings({ newSettings: edited, changedKeys: [] });
+  assert.equal(sessions.commands.length, 2, 'Reopening or unrelated saves must not resend the gap');
   await device.onUninit();
 });
 

@@ -20,11 +20,14 @@ the pair of existing app capabilities used:
 Both relative capabilities must exist. Other thermostat drivers retain their
 original control layout. The patch does not alter the vendor's `PSe`
 thermostat radial renderer or its drag handler. The native absolute temperature
-callback retains its existing debounce. The previously applied selection fix continues to select a
+callback retains its one-second debounce. The previously applied selection fix continues to select a
 surviving target when modes change.
 
-Each press sends **`true` to the corresponding relative button capability**
-through Homey's existing `pR` capability writer. The app then reads the current
+The optional coalescing layer collects a burst of presses until there has been
+a **600-millisecond pause**. It sends **`true` to the corresponding relative
+button capability**, with **`opts.steps`** containing the positive step count.
+Opposite presses subtract from the queued count; a net count of zero cancels
+the unsent change. One batch contains at most 20 steps. The app then reads the current
 thermostat values inside its serialized command path, calculates the adjustment,
 validates it and confirms the thermostat's response. The browser does not
 calculate a new target from a possibly stale displayed number and does not
@@ -34,19 +37,33 @@ displayed by Homey.
 
 The controls use real HTML buttons with explicit accessible names, native
 keyboard activation and focus behavior. Their visible circles are 34 pixels
-wide inside 44-pixel click targets. A scoped layout wrapper reserves a 48-pixel
-footer so the dial cannot push the buttons outside the control pane.
+wide inside 44-pixel click targets. A square layout wrapper keeps the buttons
+close to the dial. The coalesced layer reserves a 72-pixel footer for the button
+row and an explicit pending-status line.
 
-Both controls disable while an adjustment is pending, in read-only mode, while
-the device is unavailable, for a non-settable target, or without a finite
+The buttons remain available while a request is in flight. Additional deliberate
+presses form a separate queued batch, which waits for both the pause and the
+active request to settle. A failed batch is never automatically retried. Only
+new explicitly queued intent may run afterward. **Applying** and **Queued** text
+describes this intent without replacing the dial's confirmed temperature.
+
+Both controls disable in read-only mode, while the device is unavailable, for a non-settable target, or without a finite
 current target. Each direction also disables when its own capability is not
-settable or the displayed target is already at the corresponding bound. A
-synchronous reference lock rejects a second click even before React renders the
-pending state. Backend validation remains authoritative if the thermostat
+settable, its queued count reaches 20, or the estimated target reaches the
+corresponding bound. The estimate includes pending local intent and is only a
+conservative presentation check. Backend validation remains authoritative if the thermostat
 changes after the browser last received a reading.
 
+A new drag cancels unsent button intent and supersedes an older unsent drag.
+Its absolute writer still waits one second after the last drag event. Button
+presses made after that drag wait behind the absolute request, including its
+debounce period, so a later absolute write cannot overwrite an earlier relative
+adjustment. A target, mode, device, control-unit, availability or read-only
+change cancels unsent work. Closing the control view clears its timers. An
+already dispatched request is allowed to settle.
+
 Homey's existing capability writer displays a failed-command toast. The new
-click handler consumes that same rejected promise and unlocks the controls; it
+request handler consumes that same rejected promise and releases the scheduler; it
 does not add a duplicate notification or leave an unhandled rejection. A failed
 request does not manufacture a new temperature value.
 
@@ -65,11 +82,17 @@ button tab can be hidden by app capability options while the native dial uses
 these endpoints directly. This patch does not modify devices, Flows, thermostat
 settings, authentication or other Homey apps.
 
+The coalesced layer requires the matching Lennox app implementation that accepts
+`opts.steps` as a safe integer from 1 to 20, defaults an omitted count to one,
+and calculates the combined adjustment after a fresh read. Install and validate
+that app build before enabling this layer. An older listener that ignores
+`opts.steps` cannot implement a grouped change correctly.
+
 ## Reviewed input and generation
 
 The generator is
 [`scripts/patch-homey-13.5.3-thermostat-buttons.cjs`](../scripts/patch-homey-13.5.3-thermostat-buttons.cjs).
-It accepts only the exact Homey web bundle with the existing icon fallback and
+The original button-layer generator accepts only the exact Homey web bundle with the existing icon fallback and
 native thermostat selection fixes already applied:
 
 ```text
@@ -96,6 +119,27 @@ the original whole-bundle checksum, apply each reviewed transformation once,
 validate the final ESM and record its own final checksum. The standalone
 `patchBundle()` continues to require the exact checksum above.
 
+The separate coalescing layer preserves those original exports and requires the
+exact reviewed controls r2 bundle, including the existing status choices and
+compact dial layout:
+
+```text
+307892c8449d2445968b7b9c3c239b590e023a62a20fded4853c8c8af85ed522
+```
+
+```sh
+node scripts/patch-homey-13.5.3-thermostat-buttons.cjs --coalesce \
+  /absolute/path/controls-r2.js \
+  /absolute/path/controls-coalesced.js
+```
+
+`patchCoalescedBundle()` pins that whole-bundle hash and syntax-checks the
+result. `transformCoalescedSource()` replaces exactly one reviewed r2 renderer
+and one reviewed r2 capability hook. It does not reapply the icon, selection or
+status transformations. Only the six relative capabilities can forward a
+validated `opts.steps` count; arbitrary options and native absolute writers do
+not gain this option.
+
 ## Validation and deployment boundary
 
 The isolated renderer tests execute the actual exported patched `VSe` function,
@@ -106,12 +150,19 @@ against the temporary reviewed vendor bundle verifies the complete generated
 JavaScript and that the radial renderer is unchanged. These checks use fixtures;
 they do not change a physical thermostat.
 
+Coalescer tests use a controlled clock to exercise bursts, direction reversal,
+zero cancellation, count limits, presses during an active request, failed-batch
+recovery, unmount and context changes. They also verify drag-before-button
+ordering across the one-second absolute debounce and the 600-millisecond button
+pause. Actual positioning and device acceptance require separate live checks.
+
 Generating an artifact is separate from live deployment. A deployment should
 use the existing guarded local-patch workflow: preserve an exclusive original
 backup and metadata, check the currently served asset checksum immediately
 before replacement, replace atomically, and verify both the container file and
 decoded HTTP response. Rollback for this standalone layer restores the exact
-selection-patched input above. A combined patch needs its own recorded input
+selection-patched input above. Rollback of the coalescing layer restores the
+exact controls r2 input. A combined patch needs its own recorded input
 and output checksums and matching rollback boundary.
 
 This version-specific browser patch is not a general Homey SDK extension and

@@ -63,12 +63,16 @@ class LennoxDevice extends Homey.Device {
     const type = CAPABILITY_COMMANDS[capability];
     const adjustment = ADJUSTMENTS[capability];
     if ((!type && !adjustment && !DIRECTION_MODES.has(capability)) || !this.hasCapability(capability) || this._commandListeners.has(capability)) return;
-    this.registerCapabilityListener(capability, async (value) => {
+    this.registerCapabilityListener(capability, async (value, options) => {
       if (DIRECTION_MODES.has(capability)) throw new Error('Use the main thermostat mode control.');
       if (adjustment) {
         if (value !== true) throw new Error('Press the temperature adjustment button to change its target.');
         const units = this._temperatureUnits();
-        return this.writeCommand({ type: 'adjust', ...adjustment, units });
+        if (options?.steps !== undefined && (!Number.isInteger(options.steps) || options.steps < 1 || options.steps > 20)) {
+          throw new Error('Temperature adjustments require 1–20 whole steps.');
+        }
+        return this.writeCommand({ type: 'adjust', ...adjustment, units,
+          ...(options?.steps === undefined ? {} : { steps: options.steps }) });
       }
       const command = { type, value };
       if (capability === 'target_temperature' || NATIVE_TARGETS.has(capability)) {

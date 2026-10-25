@@ -1,6 +1,6 @@
 # Lennox for Homey
 
-A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.6** is a private test release, not an App Store publication or a claim of Lennox certification.
+A native Homey SDK v3 app for Lennox iComfort thermostats with the compatible local LAN API. Targets Homey Pro and Homey Self-Hosted Server **12.9.0 or newer**. Version **0.1.7** is a private test release, not an App Store publication or a claim of Lennox certification.
 
 ## What it provides
 
@@ -59,6 +59,8 @@ A static DHCP lease is recommended. Use Homey's Repair action to update an addre
 
 Version 0.1.3 corrected the native thermostat names required by Homey. Version 0.1.4 makes those derived controls follow the selected mode: **Heat** exposes only Heating target, **Cool** only Cooling target, **Automatic** both, and **Off** neither. Changing mode does not erase the thermostat's stored opposite target. Existing custom capability IDs remain for Flow actions and Insights history. Reopen the device control after an app update.
 
+Version 0.1.7 follows the native Lennox behavior in Heat-only or Cool-only operation: when necessary, it moves only the inactive opposite target enough to preserve the controller’s reported separation. Automatic mode keeps the other active target independent. A change succeeds only after every changed target is read back. The [queued dial-controls patch](docs/QUEUED-CONTROLS.md) keeps − / + responsive during a command and combines clicks after a short pause.
+
 Version 0.1.6 fixes false confirmation failures when the thermostat reports only Fahrenheit or only Celsius for a target. It discards the omitted cached counterpart while preserving contradictory pairs as failures. See [temperature readback evidence and diagnostics](docs/TEMPERATURE-READBACK.md).
 
 The original drag dial remains. In Advanced Settings, set **Temperature controls** to match the units displayed by Homey: Fahrenheit uses whole-degree steps; Celsius uses half-degree steps. This private release defaults to Fahrenheit for the current installation. The preference controls adjustment steps and confirmation, not Homey's displayed units or the thermostat's unit setting. The deployed Homey 13.5.3 app SDK reports metric units even when its country-based interface displays Fahrenheit, so the app uses this explicit preference.
@@ -83,11 +85,11 @@ Installation, polling, reopening settings, and reflecting an externally changed 
 
 ## Control behavior and limits
 
-Temperature, mode, and fan commands change only their requested fields and temperature representations. They do not fill missing values with defaults, silently move the opposite target, reboot the controller, or switch a thermostat out of its existing schedule. The advanced gap control is a separate explicit controller-parameter operation.
+Temperature commands send only target representations. In Heat-only or Cool-only operation, the inactive target follows only as needed, matching the native Lennox control. Automatic mode preserves the other active target. Mode and fan commands send only their requested fields. Commands do not fill missing values with defaults, reboot the controller, or switch a thermostat out of its existing schedule. The advanced gap control is a separate explicit controller-parameter operation.
 
 - **Manual mode is required for controls** when the active schedule is known. Select Manual at the thermostat before using Homey commands. Active schedules produce a clear error instead of a false success. This first release does not implement a schedule-override/resume workflow.
 - **Away mode blocks commands**, because its schedule can be shared by zones. Turn Away off at the thermostat first.
-- Heat-only and Cool-only adjustments use equipment limits independently of the stored opposite target, matching the user's reported thermostat behavior. Automatic mode additionally enforces the configured heat/cool separation, and switching into Automatic checks the existing pair before sending that mode change. The app preserves the opposite target. Both native Celsius and Fahrenheit wire values are validated. The configured auto-changeover deadband is decoded when reported by the controller; a larger configured gap is not replaced with the upstream client's default.
+- Heat-only and Cool-only active adjustments move the inactive stored target only when required by the reported separation, without changing the operating mode. Both changed targets must fit their hardware limits and confirm. An inactive legacy Flow target cannot shift the active target. Automatic mode enforces the configured gap while preserving the other active target, and entering Automatic checks the existing pair. Both Celsius and Fahrenheit wire representations are validated; an unknown gap is not replaced with an assumed default.
 - Missing setpoint configuration or a reported restriction on local writes prevents changes. A command acknowledgement alone is insufficient; the app waits for the observed value to match.
 - Unsupported modes such as emergency heat are not mapped silently to another mode. Check the thermostat if Homey marks it unavailable for an unsupported mode.
 - Local HTTPS uses the thermostat's self-signed certificate. The compatibility HTTP parser and certificate handling apply only to that thermostat connection; no global TLS settings are changed. LAN controls should stay on a trusted local network.

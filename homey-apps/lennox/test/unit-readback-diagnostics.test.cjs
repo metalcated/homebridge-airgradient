@@ -15,7 +15,8 @@ const cases = [
 ];
 
 async function rig({ key, mode, single }, reported, contradictory = false, reportOverride) {
-  const emulator = await createEmulator({ singleSetpoint: single, period: { systemMode: mode } });
+  const emulator = await createEmulator({ singleSetpoint: single, period: { systemMode: mode },
+    parameter104: { value: '3', enabled: true, equipType: 7, descriptor: 'range', unit: 'F', range: { min: '3', max: '9', inc: '1' } } });
   const api = new ManagedS30API({ host: emulator.host, port: emulator.port, protocol: emulator.protocol, requestTimeoutMs: 300 });
   const rawPeriods = [];
   const logs = [];

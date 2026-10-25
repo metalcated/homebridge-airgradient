@@ -182,20 +182,21 @@ class Session {
 
   temperatureReadback(plan, zone, zoneId, outcome) {
     if (!plan.temperature) return;
-    const { key, celsius, fahrenheit, units } = plan.temperature;
-    const target = { hsp: 'heat', csp: 'cool', sp: 'target' }[key];
-    const report = this.api.targetReports?.get(zoneId)?.[target];
-    const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
-    // A bounded local diagnostic, with no address, serial, zone name or payload.
-    // Presence flags distinguish a current wire value from the parser's cache.
-    this.manager.log('Lennox temperature readback', { outcome, target, units,
-      expectedC: celsius, expectedF: fahrenheit,
-      parsedC: number(zone[key + 'C']), parsedF: number(zone[key]),
-      targetReportRevision: report?.revision ?? null,
-      reportedCPresent: report?.hasC ?? null, reportedFPresent: report?.hasF ?? null,
-      reportedC: number(report?.celsius), reportedF: number(report?.fahrenheit),
-      publishStatus: number(this.api.lastPublishAcknowledgement?.status),
-      publishCode: number(this.api.lastPublishAcknowledgement?.code) });
+    for (const { key, celsius, fahrenheit, units } of plan.temperatures || [plan.temperature]) {
+      const target = { hsp: 'heat', csp: 'cool', sp: 'target' }[key];
+      const report = this.api.targetReports?.get(zoneId)?.[target];
+      const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+      // A bounded local diagnostic, with no address, serial, zone name or payload.
+      // Presence flags distinguish a current wire value from the parser's cache.
+      this.manager.log('Lennox temperature readback', { outcome, target, units,
+        expectedC: celsius, expectedF: fahrenheit,
+        parsedC: number(zone[key + 'C']), parsedF: number(zone[key]),
+        targetReportRevision: report?.revision ?? null,
+        reportedCPresent: report?.hasC ?? null, reportedFPresent: report?.hasF ?? null,
+        reportedC: number(report?.celsius), reportedF: number(report?.fahrenheit),
+        publishStatus: number(this.api.lastPublishAcknowledgement?.status),
+        publishCode: number(this.api.lastPublishAcknowledgement?.code) });
+    }
   }
 
   async command(serial, zoneId, command, context) {
@@ -215,20 +216,21 @@ class Session {
         const value = state[plan.expectedKey];
         let confirmed = value === plan.expectedValue;
         if (plan.temperature) {
-          const actualC = zone[plan.temperature.key + 'C'], actualF = zone[plan.temperature.key];
-          const hasC = typeof actualC === 'number' && Number.isFinite(actualC);
-          const hasF = typeof actualF === 'number' && Number.isFinite(actualF);
-          if (plan.temperature.units === 'imperial') {
-            // Fahrenheit-configured firmware can echo an exact conversion rather
-            // than the half-degree Celsius representation that we published.
-            confirmed = (hasC || hasF) && (!hasF || actualF === plan.temperature.fahrenheit) &&
-              (!hasC || Math.round(actualC * 9 / 5 + 32) === plan.temperature.fahrenheit);
-          } else {
+          confirmed = (plan.temperatures || [plan.temperature]).every(temperature => {
+            const actualC = zone[temperature.key + 'C'], actualF = zone[temperature.key];
+            const hasC = typeof actualC === 'number' && Number.isFinite(actualC);
+            const hasF = typeof actualF === 'number' && Number.isFinite(actualF);
+            if (temperature.units === 'imperial') {
+              // Fahrenheit-configured firmware can echo an exact conversion rather
+              // than the half-degree Celsius representation that we published.
+              return (hasC || hasF) && (!hasF || actualF === temperature.fahrenheit) &&
+                (!hasC || Math.round(actualC * 9 / 5 + 32) === temperature.fahrenheit);
+            }
             // Metric requests must still match the requested half-degree grid;
             // accepting the neighbouring Celsius step would misreport success.
-            confirmed = (hasC ? Math.round(actualC * 2) / 2 === plan.temperature.celsius : hasF) &&
-              (!hasF || Math.round(actualF) === plan.temperature.fahrenheit);
-          }
+            return (hasC ? Math.round(actualC * 2) / 2 === temperature.celsius : hasF) &&
+              (!hasF || Math.round(actualF) === temperature.fahrenheit);
+          });
         }
         if (confirmed) {
           this.temperatureReadback(plan, zone, zoneId, 'confirmed');

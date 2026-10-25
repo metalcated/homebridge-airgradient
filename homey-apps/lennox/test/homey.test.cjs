@@ -14,7 +14,7 @@ const candidate = host => ({ name: 'Living room', data: { id: 'serial123:0' }, s
 
 function thermostatMetadata({ single = false, mode = 'heat and cool', zoneOverrides = {} } = {}) {
   const system = { serialNumber: 'serial123', name: 'Living room', singleSetpointMode: single,
-    hspCCspCSeparation: 1.5, hspCspSeparation: 3 };
+    hasTemperatureDeadband: true, hspCCspCSeparation: 1.5, hspCspSeparation: 3 };
   const zone = { id: 0, name: 'Main zone', temperatureC: 21, humidity: 43,
     temperatureStatus: 'good', humidityStatus: 'good', systemMode: mode, tempOperation: 'off', fanMode: 'auto',
     heatingOption: true, coolingOption: true, hspC: 20, cspC: 25, spC: 22,
@@ -440,6 +440,40 @@ test('stateless plus/minus listeners use explicit control units and the existing
   assert.equal(device.capabilityOptions.cool_increase.uiComponent, null);
   assert.equal(device.hasCapability('cool_increase'), true, 'Inactive buttons retain their IDs');
   assert.equal(device.capabilityOptions.heat_increase.uiComponent, null, 'Relative commands stay available without a separate button tab');
+  await device.onUninit();
+});
+
+test('relative button listeners validate forwarded batch steps while preserving default clicks, permissions and explicit retry', async () => {
+  const { device, sessions } = await deviceFixture();
+  const metadata = thermostatMetadata();
+  sessions.connections[0].onState(metadata.state, metadata.candidate);
+  await device._updates;
+  const listener = device.listeners.get('heat_increase');
+  await assert.rejects(listener(true, { steps: 3 }), /Read-only/);
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])),
+    { type: 'adjust', target: 'heat', direction: 1, units: 'metric', steps: 3 });
+  device.settings.read_only = false;
+  for (const options of [undefined, null, {}, { unrelated: true }]) {
+    await listener(true, options);
+    assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])),
+      { type: 'adjust', target: 'heat', direction: 1, units: 'metric' });
+  }
+  for (const steps of [1, 3, 20]) {
+    await listener(true, { steps });
+    assert.equal(sessions.commands.at(-1)[3].steps, steps);
+  }
+  const count = sessions.commands.length;
+  for (const steps of [0, -1, 1.5, 21, '3', true, null, NaN]) await assert.rejects(listener(true, { steps }));
+  await assert.rejects(listener(false, { steps: 3 }), /Press the temperature adjustment button/);
+  assert.equal(sessions.commands.length, count, 'Malformed batches must fail before contacting the command manager');
+  device.settings.temperature_control_units = 'imperial';
+  sessions.commandError = Error('Emulated no-confirm response');
+  await assert.rejects(listener(true, { steps: 3 }), /no-confirm/);
+  assert.equal(device.values['target_temperature.heat'], 20);
+  sessions.commandError = null;
+  await listener(true, { steps: 3 });
+  assert.deepEqual(JSON.parse(JSON.stringify(sessions.commands.at(-1)[3])),
+    { type: 'adjust', target: 'heat', direction: 1, units: 'imperial', steps: 3 });
   await device.onUninit();
 });
 

@@ -6,7 +6,7 @@ const { validateHost, normalizeZone, candidate, planCommand, limits, resolveAdju
 
 function fixture(overrides = {}) {
   const system = { serialNumber: 'EMU-S40-001', name: 'Main system', singleSetpointMode: false,
-    hspCCspCSeparation: 1.5, manualAwayMode: false, getAwayMode: () => false };
+    hasTemperatureDeadband: true, hspCspSeparation: 3, hspCCspCSeparation: 1.5, manualAwayMode: false, getAwayMode: () => false };
   const zone = { id: 0, name: 'Living Room', temperatureC: 22, temperature: 72, humidity: 43,
     temperatureStatus: 'good', humidityStatus: 'good', systemMode: 'heat and cool', tempOperation: 'off', fanMode: 'auto',
     hspC: 20, hsp: 68, cspC: 25, csp: 77, spC: 22, sp: 72,
@@ -236,6 +236,28 @@ test('relative targets use the fresh current value and preserve one Fahrenheit o
   ]) assert.throws(() => resolveAdjustment(system, zone, { type: 'adjust', ...malformed }));
 });
 
+test('coalesced relative adjustments apply a validated step count to the current unit value and preserve the opposite target', () => {
+  const { system, zone } = fixture({ systemMode: 'heat', hsp: 73, hspC: 23, csp: 85, cspC: 29.5 });
+  for (const [units, direction, steps, expectedC, expectedF] of [
+    ['imperial', 1, 3, 24.5, 76], ['imperial', -1, 2, 21.5, 71],
+    ['metric', 1, 3, 24.5, 76], ['metric', -1, 2, 22, 72],
+  ]) {
+    const resolved = resolveAdjustment(system, zone, { type: 'adjust', target: 'heat', direction, units, steps });
+    assert.deepEqual(period(planCommand(system, zone, resolved)), { hspC: expectedC, hsp: expectedF });
+    assert.equal(zone.hsp, 73, 'Planning must use the observed state without optimistically mutating it');
+    assert.equal(zone.csp, 85);
+  }
+  zone.hsp = 74;
+  zone.hspC = 23.5;
+  assert.equal(period(planCommand(system, zone, resolveAdjustment(system, zone,
+    { type: 'adjust', target: 'heat', direction: 1, units: 'imperial', steps: 3 }))).hsp, 77, 'A later batch must derive its destination from the new actual state');
+  for (const steps of [0, -1, 1.5, 21, '3', true, null, NaN]) {
+    assert.throws(() => resolveAdjustment(system, zone, { type: 'adjust', target: 'heat', direction: 1, units: 'imperial', steps }));
+  }
+  const maximum = resolveAdjustment(system, zone, { type: 'adjust', target: 'heat', direction: -1, units: 'imperial', steps: 20 });
+  assert.equal(period(planCommand(system, zone, maximum)).hsp, 54);
+});
+
 test('reported deadband constrains both target ranges and each boundary remains safe after rounding', () => {
   const { system, zone } = fixture({ temperatureDeadbandC: 2 });
   const device = candidate(system, zone, 'thermostat.local');
@@ -255,17 +277,20 @@ test('reported deadband constrains both target ranges and each boundary remains 
   assert.throws(() => planCommand(system, zone, { type: 'heat', value: 21.5 }), /separation/);
 });
 
-test('single-direction targets use hardware limits while Automatic mode enforces the configured four-Fahrenheit gap', () => {
+test('active single-direction controls mirror native inactive-target shifts while Automatic and inactive controls remain independent', () => {
   const { system, zone } = fixture({ hsp: 72, hspC: 22, csp: 76, cspC: 24.5 });
   system.hspCspSeparation = 4;
   system.hspCCspCSeparation = 2;
-  for (const mode of ['heat', 'cool', 'off']) {
-    zone.systemMode = mode;
-    assert.deepEqual(period(planCommand(system, zone, { type: 'heat', value: 23.5 })), { hspC: 23.5, hsp: 74 });
-    assert.deepEqual(period(planCommand(system, zone, { type: 'cool', value: 23.5 })), { cspC: 23.5, csp: 74 });
-    assert.equal(zone.hsp, 72);
-    assert.equal(zone.csp, 76);
-  }
+  zone.systemMode = 'heat';
+  assert.deepEqual(period(planCommand(system, zone, { type: 'heat', value: 23.5 })), { hspC: 23.5, hsp: 74, cspC: 25.5, csp: 78 });
+  assert.throws(() => planCommand(system, zone, { type: 'cool', value: 23.5 }), /separation|inactive/i);
+  zone.systemMode = 'cool';
+  assert.deepEqual(period(planCommand(system, zone, { type: 'cool', value: 23.5 })), { cspC: 23.5, csp: 74, hspC: 21, hsp: 70 });
+  assert.throws(() => planCommand(system, zone, { type: 'heat', value: 23.5 }), /separation|inactive/i);
+  zone.systemMode = 'off';
+  assert.throws(() => planCommand(system, zone, { type: 'heat', value: 23.5 }), /separation/i);
+  assert.equal(zone.hsp, 72);
+  assert.equal(zone.csp, 76);
   zone.systemMode = 'heat';
   assert.equal(candidate(system, zone, 'thermostat.local').capabilitiesOptions['target_temperature.heat'].max, 32);
   zone.systemMode = 'cool';
@@ -275,7 +300,7 @@ test('single-direction targets use hardware limits while Automatic mode enforces
   assert.throws(() => planCommand(system, zone, { type: 'cool', value: 23.5 }), /separation/);
 });
 
-test('entering Automatic validates existing dual targets without moving them, while single-direction control does not require a gap', () => {
+test('entering Automatic validates existing dual targets without moving them and native shifts require an actual reported gap', () => {
   const { system, zone } = fixture({ systemMode: 'heat', hsp: 74, hspC: 23.5, csp: 76, cspC: 24.5 });
   system.hspCspSeparation = 4;
   system.hspCCspCSeparation = 2;
@@ -287,10 +312,48 @@ test('entering Automatic validates existing dual targets without moving them, wh
   assert.deepEqual(period(planCommand(system, zone, { type: 'mode', value: 'auto' })), { systemMode: 'heat and cool' });
   system.hspCspSeparation = null;
   system.hspCCspCSeparation = null;
-  assert.deepEqual(period(planCommand(system, zone, { type: 'heat', value: 24 })), { hspC: 24, hsp: 75 });
+  assert.throws(() => planCommand(system, zone, { type: 'heat', value: 24 }), /separation.*unknown|reported/i);
   assert.throws(() => planCommand(system, zone, { type: 'mode', value: 'auto' }), /separation is unknown/);
   system.singleSetpointMode = true;
   assert.deepEqual(period(planCommand(system, zone, { type: 'mode', value: 'auto' })), { systemMode: 'heat and cool' });
+});
+
+test('native inactive-target synthesis honors each reported gap and both hardware grids without weakening metric Flows or Automatic', () => {
+  for (let gapF = 3; gapF <= 9; gapF++) {
+    for (const units of ['imperial', 'metric']) {
+      const { system, zone } = fixture({ systemMode: 'heat', hsp: 73, hspC: 23, csp: 76, cspC: 24.5,
+        minCsp: 60, maxCsp: 95 });
+      system.hspCspSeparation = gapF;
+      system.hspCCspCSeparation = Math.round(gapF * 5 / 9 * 2) / 2;
+      const plan = planCommand(system, zone, { type: 'heat', value: 26.5, units });
+      const update = period(plan);
+      assert.equal(update.hsp, 80);
+      assert.equal(update.hspC, 26.5);
+      assert.ok(update.csp >= 80 + gapF && update.csp <= zone.maxCsp);
+      assert.ok(update.cspC >= 26.5 + system.hspCCspCSeparation && update.cspC <= zone.maxCspC);
+      assert.equal(Math.round(update.cspC * 9 / 5 + 32), update.csp);
+      assert.equal(update.cspC * 2, Math.round(update.cspC * 2));
+      assert.deepEqual(plan.temperatures.map(target => target.key), ['hsp', 'csp']);
+      assert.ok(plan.temperatures.every(target => target.units === units));
+      assert.deepEqual(Object.keys(update).sort(), ['csp', 'cspC', 'hsp', 'hspC']);
+      assert.equal(zone.csp, 76, 'Planning must not optimistically mutate observed targets');
+    }
+  }
+  for (const bounds of [{ maxCspC: 24.5 }, { maxCsp: 76 }]) {
+    const { system, zone } = fixture({ systemMode: 'heat', hsp: 73, hspC: 23, csp: 76, cspC: 24.5, ...bounds });
+    assert.throws(() => planCommand(system, zone, { type: 'heat', value: 23.5, units: 'imperial' }), /limits|smaller/);
+  }
+  for (const bounds of [{ minHspC: 22.5 }, { minHsp: 73 }]) {
+    const { system, zone } = fixture({ systemMode: 'cool', hsp: 73, hspC: 23, csp: 76, cspC: 24.5, ...bounds });
+    assert.throws(() => planCommand(system, zone, { type: 'cool', value: 24, units: 'imperial' }), /limits|smaller/);
+  }
+  const { system, zone } = fixture({ systemMode: 'heat', hsp: 73, hspC: 23, csp: 76, cspC: 24.5 });
+  system.hasTemperatureDeadband = false;
+  assert.throws(() => planCommand(system, zone, { type: 'heat', value: 23.5 }), /reported|unknown/i);
+  zone.temperatureDeadbandC = 1.5;
+  assert.equal(period(planCommand(system, zone, { type: 'heat', value: 23.5 })).csp, 77);
+  zone.systemMode = 'heat and cool';
+  assert.throws(() => planCommand(system, zone, { type: 'heat', value: 23.5 }), /separation/);
 });
 
 test('missing thermostat limits retain readings but do not expose an unbounded write control', () => {
@@ -424,6 +487,8 @@ test('whole-Fahrenheit hardware endpoints survive Celsius conversion while metri
       minHspC: 4.5, minHsp: 40, maxHspC: 32, maxHsp: 90,
       minCspC: 4.5, minCsp: 40, maxCspC: 32, maxCsp: 90 });
     system.singleSetpointMode = type === 'target';
+    if (type === 'heat') zone.coolingOption = false;
+    if (type === 'cool') zone.heatingOption = false;
     const key = { heat: 'hsp', cool: 'csp', target: 'sp' }[type];
     for (const [fahrenheit, celsius] of [[40, 4.5], [90, 32]]) {
       const plan = planCommand(system, zone, { type, value: (fahrenheit - 32) * 5 / 9, units: 'imperial' });

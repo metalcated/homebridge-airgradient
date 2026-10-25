@@ -77,6 +77,17 @@ function withinFahrenheitLimits(zone, kind, f) {
   return (!finite(zone['min' + key]) || f >= zone['min' + key]) && (!finite(zone['max' + key]) || f <= zone['max' + key]);
 }
 
+function reportedTemperatureGap(system, zone) {
+  const reportedZone = finite(zone.temperatureDeadbandC);
+  if (!reportedZone && system.hasTemperatureDeadband !== true) throw Error('The thermostat has not reported its heat/cool separation. Wait for its configuration before changing temperature.');
+  const gap = temperatureGap(system, zone);
+  if (!Number.isInteger(gap.f) || gap.f < 3 || gap.f > 9 || (!reportedZone &&
+    (!Number.isInteger(system.hspCspSeparation) || system.hspCspSeparation < 3 || system.hspCspSeparation > 9))) {
+    throw Error('The thermostat heat/cool separation is unknown or outside its supported 3–9°F range');
+  }
+  return gap;
+}
+
 function effectiveTargetLimits(system, zone, kind) {
   if (kind === 'target') {
     const heat = limits(zone, 'heat'), cool = limits(zone, 'cool');
@@ -100,12 +111,15 @@ function effectiveTargetLimits(system, zone, kind) {
 function resolveAdjustment(system, zone, command) {
   if (!command || command.type !== 'adjust' || !['heat', 'cool', 'target'].includes(command.target) ||
     ![-1, 1].includes(command.direction) || !['imperial', 'metric'].includes(command.units)) throw Error('Unsupported temperature adjustment');
+  const steps = command.steps === undefined ? 1 : command.steps;
+  if (!Number.isInteger(steps) || steps < 1 || steps > 20) throw Error('Temperature adjustments require 1–20 whole steps.');
   const mode = MODES[zone.systemMode];
   if (!mode || mode === 'off') throw Error('Select heating or cooling before adjusting the temperature');
   if (system.singleSetpointMode ? command.target !== 'target' : command.target === 'target') throw Error('This temperature adjustment does not match the thermostat setpoint mode');
   if (command.target !== 'target' && mode !== command.target && mode !== 'auto') throw Error('Use the temperature adjustment for the active thermostat mode');
   const current = temperaturePair(zone, command.target);
-  const value = command.units === 'imperial' ? (Math.round(current.f) + command.direction - 32) * 5 / 9 : current.c + command.direction * 0.5;
+  const delta = command.direction * steps;
+  const value = command.units === 'imperial' ? (Math.round(current.f) + delta - 32) * 5 / 9 : current.c + delta * 0.5;
   return { type: command.target, value, units: command.units };
 }
 
@@ -265,6 +279,7 @@ function planCommand(system, zone, command) {
     if (ranges.some(range => rounded < range.min || rounded > range.max)) throw Error('Rounded temperature is outside the thermostat limits');
     const fahrenheit = Math.round(rounded * 9 / 5 + 32);
     if (ranges.some((range, index) => !withinFahrenheitLimits(zone, kind === 'single' ? ['heat', 'cool'][index] : kind, fahrenheit))) throw Error('Temperature is outside the thermostat Fahrenheit limits');
+    let inactive;
     if (kind !== 'single' && zone.systemMode === 'heat and cool') {
       const gap = temperatureGap(system, zone), opposite = temperaturePair(zone, kind === 'heat' ? 'cool' : 'heat');
       if (kind === 'heat' ? rounded + gap.c > opposite.c || fahrenheit + gap.f > opposite.f : rounded - gap.c < opposite.c || fahrenheit - gap.f < opposite.f) {
@@ -275,12 +290,39 @@ function planCommand(system, zone, command) {
         } catch { /* the opposite target can leave no valid adjustable range */ }
         throw Error(`Heating and cooling targets must retain their temperature separation of ${gap.c}°C (${gap.f}°F). The ${kind === 'heat' ? 'cooling' : 'heating'} target is ${opposite.c}°C (${opposite.f}°F).${allowed}`);
       }
+    } else if (kind !== 'single' && zone.heatingOption === true && zone.coolingOption === true) {
+      const gap = reportedTemperatureGap(system, zone), other = kind === 'heat' ? 'cool' : 'heat';
+      const opposite = temperaturePair(zone, other);
+      const separated = (c, f) => kind === 'heat'
+        ? c >= rounded + gap.c && f >= fahrenheit + gap.f
+        : c <= rounded - gap.c && f <= fahrenheit - gap.f;
+      if (!separated(opposite.c, opposite.f)) {
+        if (zone.systemMode !== kind) {
+          throw Error(`The stored heating and cooling targets require ${gap.c}°C (${gap.f}°F) separation. This change would move the other target; adjust the active target or select its matching operating mode first.`);
+        }
+        // Lennox's own Heat/Cool controls move the inactive stored target when
+        // needed. Find the nearest coherent pair without changing the requested
+        // active target, operating mode, schedule, fan, or humidity settings.
+        const range = limits(zone, other);
+        const candidates = [];
+        for (let half = Math.ceil(range.min * 2); half <= Math.floor(range.max * 2); half++) {
+          const c = half / 2, f = Math.round(c * 9 / 5 + 32);
+          const outward = kind === 'heat' ? c >= opposite.c && f >= opposite.f : c <= opposite.c && f <= opposite.f;
+          if (outward && separated(c, f) && withinFahrenheitLimits(zone, other, f)) candidates.push({ c, f });
+        }
+        inactive = kind === 'heat' ? candidates[0] : candidates.at(-1);
+        if (!inactive) throw Error(`The ${other === 'heat' ? 'heating' : 'cooling'} target cannot move far enough within its thermostat limits to preserve the ${gap.c}°C (${gap.f}°F) separation. Choose a smaller temperature change.`);
+        inactive = { key: other === 'heat' ? 'hsp' : 'csp',
+          celsius: inactive.c, fahrenheit: inactive.f, units: command.units ?? 'metric' };
+        period[inactive.key + 'C'] = inactive.celsius; period[inactive.key] = inactive.fahrenheit;
+      }
     }
     const key = { heat: 'hsp', cool: 'csp', single: 'sp' }[kind];
     period[key + 'C'] = rounded; period[key] = fahrenheit;
     expectedKey = kind === 'single' ? 'target_temperature' : kind + '_target'; expectedValue = rounded;
+    const temperature = { key, celsius: rounded, fahrenheit, units: command.units ?? 'metric' };
     return { data: { schedules: [{ id: scheduleId, schedule: { periods: [{ id: 0, period }] } }] }, expectedKey, expectedValue,
-      temperature: { key, celsius: rounded, fahrenheit, units: command.units ?? 'metric' } };
+      temperature, temperatures: inactive ? [temperature, inactive] : [temperature] };
   } else throw Error('Unsupported thermostat command');
   return { data: { schedules: [{ id: scheduleId, schedule: { periods: [{ id: 0, period }] } }] }, expectedKey, expectedValue };
 }

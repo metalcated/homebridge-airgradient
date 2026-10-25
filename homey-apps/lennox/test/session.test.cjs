@@ -34,7 +34,7 @@ class FakeClient {
   constructor(options = {}) {
     this.options = options;
     this.system = { sysId: 'LCC', serialNumber: options.serial ?? SERIAL, name: 'Emulated Lennox',
-      singleSetpointMode: false, hspCCspCSeparation: 1.5, manualAwayMode: false, getAwayMode: () => false,
+      singleSetpointMode: false, hasTemperatureDeadband: true, hspCspSeparation: 3, hspCCspCSeparation: 1.5, manualAwayMode: false, getAwayMode: () => false,
       zones: [zone(0), zone(1), zone(2, { isZoneDisabled: true })] };
     Object.assign(this.system, options.systemOverrides || {});
     Object.assign(this.system.zones[0], options.zoneOverrides || {});
@@ -495,24 +495,24 @@ test('a failed adjustment does not poison the serialized queue or alter the oppo
   } finally { await manager.close(); }
 });
 
-test('a four-degree Automatic transition rejection does not publish, alter the opposite target or poison later commands', async () => {
+test('an invalid pre-existing pair blocks Automatic while an explicit target repair and later mode command remain usable', async () => {
   const { manager, clients } = setup({ clientOptions: {
     systemOverrides: { hspCspSeparation: 4, hspCCspCSeparation: 2 },
-    zoneOverrides: { systemMode: 'heat', hsp: 72, hspC: 22, csp: 76, cspC: 24.5 },
+    zoneOverrides: { systemMode: 'heat', hsp: 74, hspC: 23.5, csp: 76, cspC: 24.5 },
   } });
   try {
     const results = await Promise.allSettled([
-      manager.command(HOST, SERIAL, 0, { type: 'heat', value: 23.5 }, false),
       manager.command(HOST, SERIAL, 0, { type: 'mode', value: 'auto' }, false),
-      manager.command(HOST, SERIAL, 0, { type: 'mode', value: 'heat' }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'heat', value: 22 }, false),
+      manager.command(HOST, SERIAL, 0, { type: 'mode', value: 'auto' }, false),
     ]);
-    assert.deepEqual(results.map(result => result.status), ['fulfilled', 'rejected', 'fulfilled']);
-    assert.match(results[1].reason.message, /Automatic mode.*separated/);
+    assert.deepEqual(results.map(result => result.status), ['rejected', 'fulfilled', 'fulfilled']);
+    assert.match(results[0].reason.message, /Automatic mode.*separated/);
     const writes = publishes(clients[0]).map(event => event.data.schedules[0].schedule.periods[0].period);
-    assert.deepEqual(writes, [{ hspC: 23.5, hsp: 74 }, { systemMode: 'heat' }]);
+    assert.deepEqual(writes, [{ hspC: 22, hsp: 72 }, { systemMode: 'heat and cool' }]);
     assert.equal(clients[0].system.zones[0].csp, 76);
     assert.equal(clients[0].system.zones[0].cspC, 24.5);
-    assert.equal(clients[0].system.zones[0].systemMode, 'heat');
+    assert.equal(clients[0].system.zones[0].systemMode, 'heat and cool');
   } finally { await manager.close(); }
 });
 
@@ -572,6 +572,7 @@ test('imperial hardware endpoints publish their valid paired representation and 
       const { manager, clients } = setup({ clientOptions: { zoneOverrides: {
         systemMode: type, minHspC: 4.5, minHsp: 40, maxHspC: 32, maxHsp: 90,
         minCspC: 4.5, minCsp: 40, maxCspC: 32, maxCsp: 90,
+        ...(type === 'heat' ? { coolingOption: false } : { heatingOption: false }),
       } } });
       try {
         const action = manager.command(HOST, SERIAL, 0, { type, value, units }, false);

@@ -92,11 +92,188 @@ function writePatchedBundle(inputPath, outputPath) {
   return report;
 }
 
+const COALESCED_EXPECTED_SHA256 = '307892c8449d2445968b7b9c3c239b590e023a62a20fded4853c8c8af85ed522';
+function replaceReviewed(source, before, after) {
+  const count = source.split(before).length - 1;
+  if (count !== 1) throw Error(`Expected one reviewed coalescing fragment; found ${count}`);
+  return source.replace(before, after);
+}
+function buildCoalescedRenderer() {
+  const start = AFTER.indexOf('const adjustmentPending=');
+  const end = AFTER.indexOf('function adjustmentButton(', start);
+  if (start < 0 || end < start) throw Error('The reviewed adjustment handlers changed');
+  const scheduler = String.raw`const adjustmentScheduler=(0,P.useRef)({active:null,relative:{steps:0,timer:null,ready:false,context:null},absolute:null});
+const adjustmentMounted=(0,P.useRef)(true);
+const adjustmentLive=(0,P.useRef)(null);
+const [isAdjustmentPending,setAdjustmentPending]=(0,P.useState)(false);
+const [queuedSteps,setQueuedSteps]=(0,P.useState)(0);
+const [hasPendingAbsolute,setPendingAbsolute]=(0,P.useState)(false);
+const showAdjustments=adjustmentPrefix!=null&&decreaseCapability!=null&&increaseCapability!=null;
+const displayStep=Number.isFinite(d?.step)&&d.step>0?d.step:0.5;
+const adjustmentContext=JSON.stringify([e.deviceId,r,mainMode,t?.settings?.temperature_control_units??'imperial',d?.units,displayStep,t?.available===true,t?.settings?.read_only===false]);
+const canWriteAbsolute=lennoxDevice&&o!=null&&o.setable!==false&&t?.available===true&&t?.settings?.read_only===false&&Number.isFinite(l);
+const canAdjust=showAdjustments&&canWriteAbsolute;
+adjustmentLive.current={context:adjustmentContext,canAdjust,canWriteAbsolute,decreaseWriter,increaseWriter,decreaseCapability,increaseCapability,value:l,min:d?.min,max:d?.max,step:displayStep,units:d?.units??'',type:adjustmentType};
+function cancelUnsentAdjustments(){
+  const scheduler=adjustmentScheduler.current;
+  clearTimeout(scheduler.relative.timer);
+  scheduler.relative={steps:0,timer:null,ready:false,context:null};
+  if(scheduler.absolute)clearTimeout(scheduler.absolute.timer);
+  scheduler.absolute=null;
+  if(adjustmentMounted.current){setQueuedSteps(0);setPendingAbsolute(false);}
+}
+function startAdjustmentBatch(batch){
+  const scheduler=adjustmentScheduler.current;
+  scheduler.active=batch;
+  setAdjustmentPending(true);
+  Promise.resolve().then(()=>{
+    const current=adjustmentLive.current;
+    if(!adjustmentMounted.current||batch.context!==current.context)return;
+    if(batch.kind==='absolute')return current.canWriteAbsolute?batch.writer(batch.value):undefined;
+    if(!current.canAdjust)return;
+    return batch.writer(true,{steps:Math.abs(batch.steps)});
+  }).catch(()=>{}).finally(()=>{
+    if(scheduler.active!==batch)return;
+    scheduler.active=null;
+    if(adjustmentMounted.current){setAdjustmentPending(false);flushAdjustments();}
+  });
+}
+function flushAdjustments(){
+  const scheduler=adjustmentScheduler.current,current=adjustmentLive.current;
+  if(!adjustmentMounted.current||scheduler.active)return;
+  if(scheduler.absolute){
+    const absolute=scheduler.absolute;
+    if(absolute.context!==current.context||!current.canWriteAbsolute){cancelUnsentAdjustments();return;}
+    if(!absolute.ready)return;
+    scheduler.absolute=null;
+    setPendingAbsolute(false);
+    startAdjustmentBatch(absolute);
+    return;
+  }
+  const queued=scheduler.relative;
+  if(!queued.ready||queued.steps===0)return;
+  if(queued.context!==current.context||!current.canAdjust){cancelUnsentAdjustments();return;}
+  const writer=queued.steps<0?current.decreaseWriter:current.increaseWriter;
+  const capability=queued.steps<0?current.decreaseCapability:current.increaseCapability;
+  const steps=queued.steps;
+  scheduler.relative={steps:0,timer:null,ready:false,context:null};
+  setQueuedSteps(0);
+  if(capability?.setable!==true)return;
+  startAdjustmentBatch({kind:'relative',context:current.context,steps,writer,baseValue:current.value,step:current.step,units:current.units});
+}
+function estimatedTarget(current,queued){
+  const scheduler=adjustmentScheduler.current;
+  const pendingAbsolute=scheduler.absolute;
+  const active=scheduler.active;
+  let base=current.value;
+  if(active?.context===current.context)base=active.kind==='absolute'?active.value:active.baseValue+active.steps*active.step;
+  if(pendingAbsolute?.context===current.context)base=pendingAbsolute.value;
+  return base+queued*current.step;
+}
+function pressAdjustment(event,direction,disabled){
+  event.stopPropagation();
+  const current=adjustmentLive.current,scheduler=adjustmentScheduler.current;
+  if(disabled||!adjustmentMounted.current||!current.canAdjust)return;
+  const capability=direction<0?current.decreaseCapability:current.increaseCapability;
+  if(capability?.setable!==true)return;
+  const queued=scheduler.relative;
+  if(queued.context!=null&&queued.context!==current.context)cancelUnsentAdjustments();
+  const pending=scheduler.relative;
+  const next=pending.steps+direction;
+  if(Math.abs(next)>20)return;
+  const estimate=estimatedTarget(current,next);
+  if(Math.abs(next)>Math.abs(pending.steps)&&((Number.isFinite(current.min)&&estimate<current.min-1e-7)||(Number.isFinite(current.max)&&estimate>current.max+1e-7)))return;
+  clearTimeout(pending.timer);
+  pending.steps=next;
+  pending.context=current.context;
+  pending.ready=false;
+  pending.timer=next===0?null:setTimeout(()=>{
+    if(scheduler.relative!==pending||!adjustmentMounted.current)return;
+    pending.timer=null;
+    pending.ready=true;
+    flushAdjustments();
+  },600);
+  setQueuedSteps(next);
+}
+function queueAbsolute(value){
+  const current=adjustmentLive.current,scheduler=adjustmentScheduler.current;
+  cancelUnsentAdjustments();
+  if(!adjustmentMounted.current||!current.canWriteAbsolute)return;
+  const absolute={kind:'absolute',context:current.context,value,writer:u,ready:false,timer:null,step:current.step,units:current.units};
+  scheduler.absolute=absolute;
+  setPendingAbsolute(true);
+  absolute.timer=setTimeout(()=>{
+    if(scheduler.absolute!==absolute||!adjustmentMounted.current)return;
+    absolute.timer=null;
+    absolute.ready=true;
+    flushAdjustments();
+  },1000);
+}
+const onLennoxAbsolute=(0,P.useMemo)(()=>queueAbsolute,[u]);
+(0,P.useEffect)(()=>{
+  adjustmentMounted.current=true;
+  return()=>{adjustmentMounted.current=false;cancelUnsentAdjustments();};
+},[]);
+(0,P.useEffect)(()=>{
+  const scheduler=adjustmentScheduler.current;
+  if((scheduler.relative.context!=null&&scheduler.relative.context!==adjustmentContext)||(scheduler.absolute&&scheduler.absolute.context!==adjustmentContext)||!canWriteAbsolute)cancelUnsentAdjustments();
+},[adjustmentContext,canWriteAbsolute]);
+function changeAdjustmentSelection(value){cancelUnsentAdjustments();i(value);}
+const pendingEstimate=estimatedTarget(adjustmentLive.current,queuedSteps);
+const cannotAdjust=!canAdjust;
+const decreaseDisabled=cannotAdjust||decreaseCapability?.setable!==true||queuedSteps<=-20||(Number.isFinite(d?.min)&&pendingEstimate<=d.min);
+const increaseDisabled=cannotAdjust||increaseCapability?.setable!==true||queuedSteps>=20||(Number.isFinite(d?.max)&&pendingEstimate>=d.max);
+function formatAdjustment(steps,step,units){return(steps>0?'+':'−')+(Math.abs(steps)*step).toFixed(1).replace(/\.0$/,'')+units;}
+const activeAdjustment=adjustmentScheduler.current.active;
+const applyingText=isAdjustmentPending&&activeAdjustment?(activeAdjustment.kind==='absolute'?'Applying dial change…':'Applying '+formatAdjustment(activeAdjustment.steps,activeAdjustment.step,activeAdjustment.units)+'…'):'';
+const queuedText=queuedSteps?'Queued '+formatAdjustment(queuedSteps,displayStep,d?.units??'')+(isAdjustmentPending||hasPendingAbsolute?' after current change':' — sends after pause'):hasPendingAbsolute?'Dial change waits for a pause':'';
+const adjustmentStatus=[applyingText,queuedText].filter(Boolean).join(' · ');
+`;
+  let source = AFTER.slice(0, start) + scheduler + AFTER.slice(end);
+  source = replaceReviewed(source, 'max-height:calc(100% - 48px)', 'max-height:calc(100% - 72px)');
+  source = replaceReviewed(source, 'onClick:event=>pressAdjustment(event,writer,disabled)', 'onClick:event=>pressAdjustment(event,direction,disabled)');
+  source = replaceReviewed(source, 'modeValue:m,onTargetValueChange:h}', 'modeValue:m,onTargetValueChange:lennoxDevice?onLennoxAbsolute:h}');
+  source = replaceReviewed(source, 'onSelectionChange:i})}),action]', 'onSelectionChange:lennoxDevice?changeAdjustmentSelection:i})}),action]');
+  const footer = "(0,L.jsxs)('div',{role:'group','aria-label':'Temperature adjustment','aria-busy':isAdjustmentPending,style:{display:'flex',alignItems:'center',justifyContent:'center',gap:12,flex:'0 0 48px',height:48,width:'100%',paddingBottom:4,boxSizing:'border-box'},children:[adjustmentButton(-1,decreaseWriter,decreaseDisabled),adjustmentButton(1,increaseWriter,increaseDisabled)]})";
+  const coalescedFooter = "(0,L.jsxs)('div',{role:'group','aria-label':'Temperature adjustment',style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flex:'0 0 72px',height:72,width:'100%',boxSizing:'border-box'},children:[(0,L.jsxs)('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:12,height:48},children:[adjustmentButton(-1,decreaseWriter,decreaseDisabled),adjustmentButton(1,increaseWriter,increaseDisabled)]}),(0,L.jsx)('div',{role:'status','aria-live':'polite',style:{fontSize:12,lineHeight:'20px',minHeight:20,textAlign:'center',opacity:0.8},children:adjustmentStatus})]})";
+  return replaceReviewed(source, footer, coalescedFooter);
+}
+const COALESCED_AFTER = buildCoalescedRenderer();
+function buildCoalescedHook() {
+  const before='(lennoxDeviceInstance?.manager?.setCapabilityValue?.({deviceId:lennoxDeviceInstance.id,capabilityId:o.id,value:e,$timeout:lennoxRequestTimeout})??Promise.reject(Error(`Device manager not available`)))';
+  const relative='[`heat_decrease`,`heat_increase`,`cool_decrease`,`cool_increase`,`target_decrease`,`target_increase`].includes(o.id)';
+  const after='(('+relative+'&&t?.steps!==void 0&&(!Number.isSafeInteger(t.steps)||t.steps<1||t.steps>20))?Promise.reject(Error(`Adjustment steps must be a whole number from 1 to 20`)):(lennoxDeviceInstance?.manager?.setCapabilityValue?.({deviceId:lennoxDeviceInstance.id,capabilityId:o.id,value:e,...('+relative+'&&t?.steps!==void 0?{opts:{steps:t.steps}}:{}),$timeout:lennoxRequestTimeout})??Promise.reject(Error(`Device manager not available`))))';
+  return replaceReviewed(HOOK_AFTER,before,after);
+}
+const COALESCED_HOOK_AFTER=buildCoalescedHook();
+function transformCoalescedSource(source) {
+  if(typeof source!=='string')throw Error('Expected JavaScript source text');
+  source=replaceReviewed(source,AFTER,COALESCED_AFTER);
+  return replaceReviewed(source,HOOK_AFTER,COALESCED_HOOK_AFTER);
+}
+function patchCoalescedBundle(input) {
+  if(!Buffer.isBuffer(input)||sha256(input)!==COALESCED_EXPECTED_SHA256)throw Error('Unsupported Homey bundle; the exact reviewed controls layer is required');
+  const output=Buffer.from(transformCoalescedSource(input.toString('utf8')));
+  const checked=spawnSync(process.execPath,['--check','--input-type=module'],{input:output,encoding:'utf8',maxBuffer:1024*1024});
+  if(checked.error)throw checked.error;
+  if(checked.status!==0)throw Error(`Patched JavaScript failed syntax validation: ${checked.stderr.trim()}`);
+  return{output,report:{homeyVersion:'13.5.3',originalSha256:sha256(input),patchedSha256:sha256(output),replacements:2,driverId:DRIVER_ID}};
+}
+function writeCoalescedBundle(inputPath,outputPath) {
+  if(!inputPath||!outputPath||path.resolve(inputPath)===path.resolve(outputPath))throw Error('Expected separate input and output paths');
+  if(fs.existsSync(outputPath))throw Error('Output already exists');
+  const {output,report}=patchCoalescedBundle(fs.readFileSync(inputPath));
+  fs.writeFileSync(outputPath,output,{flag:'wx',mode:0o644});
+  return report;
+}
+
 if (require.main === module) {
   try {
-    if (process.argv.length !== 4) throw Error('Usage: node patch-homey-13.5.3-thermostat-buttons.cjs SELECTION_PATCHED.js OUTPUT.js');
-    process.stdout.write(JSON.stringify(writePatchedBundle(process.argv[2], process.argv[3]), null, 2) + '\n');
+    const coalesce=process.argv[2]==='--coalesce';
+    const args=process.argv.slice(coalesce?3:2);
+    if(args.length!==2)throw Error('Usage: node patch-homey-13.5.3-thermostat-buttons.cjs [--coalesce] REVIEWED.js OUTPUT.js');
+    process.stdout.write(JSON.stringify((coalesce?writeCoalescedBundle:writePatchedBundle)(...args),null,2)+'\n');
   } catch (error) { process.stderr.write(error.message + '\n'); process.exitCode = 1; }
 }
 
-module.exports = { EXPECTED_SHA256, DRIVER_ID, BEFORE, AFTER, HOOK_BEFORE, HOOK_AFTER, transformSource, patchBundle, writePatchedBundle };
+module.exports = { COALESCED_EXPECTED_SHA256, COALESCED_AFTER, COALESCED_HOOK_AFTER, transformCoalescedSource, patchCoalescedBundle, writeCoalescedBundle, EXPECTED_SHA256, DRIVER_ID, BEFORE, AFTER, HOOK_BEFORE, HOOK_AFTER, transformSource, patchBundle, writePatchedBundle };

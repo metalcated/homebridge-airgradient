@@ -1,0 +1,15 @@
+{
+  "pair": {
+    "title": "Connect your thermostat",
+    "subtitle": "Enter the local address of a compatible Lennox iComfort thermostat. No cloud login is required.",
+    "address": "Thermostat IP address or hostname",
+    "connect": "Find thermostat zones",
+    "working": "Connecting to the thermostat…",
+    "readonly": "New devices are read-only. Enable controls later in the device's advanced settings.",
+    "retry": "Check the address and make sure Homey can reach the thermostat, then try again.",
+    "repair_title": "Reconnect your thermostat",
+    "repair_subtitle": "Update its network address without changing the thermostat or zone linked to this device.",
+    "repair_button": "Reconnect",
+    "repair_done": "The thermostat address was updated."
+  }
+}

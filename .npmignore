@@ -136,3 +136,6 @@ web_modules/
 # Development-only emulator and test documentation
 test/
 docs/
+
+# Independent Homey apps are not part of the AirGradient npm plugin.
+homey-apps/

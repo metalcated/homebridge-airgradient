@@ -1,0 +1,44 @@
+name: Validate Lennox Homey app
+
+on:
+  push:
+    paths: ['homey-apps/lennox/**', '.github/workflows/homey-lennox.yml']
+  pull_request:
+    paths: ['homey-apps/lennox/**', '.github/workflows/homey-lennox.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: homey-apps/lennox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: homey-apps/lennox/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm run validate
+      - run: npm run build
+  runtime:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: homey-apps/lennox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: homey-apps/lennox/package-lock.json
+      - run: npm ci --omit=dev --ignore-scripts
+      - run: npm test

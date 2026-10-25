@@ -121,3 +121,7 @@ dist
 
 # Webstorm
 .idea
+
+# Homey app build output and developer login state
+.homeybuild/
+.homey/

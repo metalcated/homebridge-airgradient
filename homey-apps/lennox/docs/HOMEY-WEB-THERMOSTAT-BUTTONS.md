@@ -5,6 +5,12 @@ the Lennox thermostat dial. The existing dial, drag behavior and heating/cooling
 selector remain in the same control tab. It targets the reviewed Homey
 Self-Hosted **13.5.3** web asset; it is separate from the Lennox app package.
 
+The latest **immediate preview** presentation moves the dial as each button is
+pressed and keeps the queue in the background. It removes the visible
+Applying/Queued messages and returns to a compact 48-pixel button row. The
+coalescing layer described below remains a separately reproducible input and
+rollback point.
+
 ## Scope and behavior
 
 The controls appear only for the exact driver
@@ -31,7 +37,9 @@ the unsent change. One batch contains at most 20 steps. The app then reads the c
 thermostat values inside its serialized command path, calculates the adjustment,
 validates it and confirms the thermostat's response. The browser does not
 calculate a new target from a possibly stale displayed number and does not
-optimistically increment the dial. The app's **Temperature controls** setting
+optimistically increment the dial in the original coalescing presentation.
+The newer preview presentation intentionally previews local intent as described
+below. The app's **Temperature controls** setting
 determines whether the adjustment is 1°F or 0.5°C; it should match the units
 displayed by Homey.
 
@@ -88,6 +96,33 @@ and calculates the combined adjustment after a fresh read. Install and validate
 that app build before enabling this layer. An older listener that ignores
 `opts.steps` cannot implement a grouped change correctly.
 
+## Immediate dial preview layer
+
+The preview layer uses the existing scheduler's pending absolute value, active
+batch and queued step count to move the dial immediately. It bounds the preview
+to the capability's limits and does not write that number into Homey's reported
+capability store. Actual target events reconcile the preview without counting
+the active batch twice. A rejected batch returns to the latest actual target,
+including a target that changed before a paired thermostat write failed.
+
+If a successful request resolves just before its actual target event reaches
+the browser, a completed preview bridges that delivery gap for at most
+**1,500 milliseconds**. A following queued batch can use that preview as its
+visual starting point. Any actual target event reconciles it; expiry falls back
+to the latest reported value. Context changes and unmount clear its timer.
+
+For the three native Lennox temperature capabilities only, the preview layer
+disables the generic hook's separate optimistic assignment and captured-value
+rollback. The preview owns the visual intent, and the hook continues to receive
+actual events and show errors. This prevents a native-hook error from replacing
+a newer actual target with the value captured before the request. Other drivers,
+relative capabilities and requests without the scoped 45-second option retain
+their existing hook behavior.
+
+There are no visible queue messages. The button group's accessibility busy
+state remains available while work is pending. The background pause, ordering,
+count limits, failure policy and physical confirmation path are unchanged.
+
 ## Reviewed input and generation
 
 The generator is
@@ -139,6 +174,23 @@ and one reviewed r2 capability hook. It does not reapply the icon, selection or
 status transformations. Only the six relative capabilities can forward a
 validated `opts.steps` count; arbitrary options and native absolute writers do
 not gain this option.
+
+The immediate-preview layer preserves both earlier generators and accepts only
+the exact coalesced input:
+
+```text
+e1e089da43b87ed1af663ff59f1017aeddd38b70ae30287a33748cb12075a57c
+```
+
+```sh
+node scripts/patch-homey-13.5.3-thermostat-buttons.cjs --preview \
+  /absolute/path/controls-coalesced.js \
+  /absolute/path/controls-preview.js
+```
+
+`patchPreviewBundle()` pins that input, applies `transformPreviewSource()` to
+exactly one reviewed renderer and capability hook, and checks the final ESM.
+Rollback restores the exact coalescing layer above.
 
 ## Validation and deployment boundary
 

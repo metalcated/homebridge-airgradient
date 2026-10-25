@@ -267,13 +267,135 @@ function writeCoalescedBundle(inputPath,outputPath) {
   return report;
 }
 
+const PREVIEW_EXPECTED_SHA256='e1e089da43b87ed1af663ff59f1017aeddd38b70ae30287a33748cb12075a57c';
+function buildPreviewRenderer(){
+  let source=replaceReviewed(COALESCED_AFTER,'max-height:calc(100% - 72px)','max-height:calc(100% - 48px)');
+  source=replaceReviewed(source,'let{device:t}=WN','let{device:t,deviceInstance:lennoxPreviewDeviceInstance}=WN');
+  source=replaceReviewed(source,'const adjustmentLive=(0,P.useRef)(null);',`const adjustmentLive=(0,P.useRef)(null);
+const previewObserved=(0,P.useRef)({context:null,value:l});
+const [,refreshPreview]=(0,P.useState)(0);`);
+  source=replaceReviewed(source,'const canAdjust=showAdjustments&&canWriteAbsolute;',`const canAdjust=showAdjustments&&canWriteAbsolute;
+if(previewObserved.current.context!==adjustmentContext){
+  const value=Number.isFinite(o?.value)?o.value:l;
+  previewObserved.current={context:adjustmentContext,value,metadataValue:o?.value};
+}else if(Number.isFinite(o?.value)&&o.value!==previewObserved.current.metadataValue){
+  previewObserved.current.value=o.value;
+  previewObserved.current.metadataValue=o.value;
+  const active=adjustmentScheduler.current.active;
+  if(active?.context===adjustmentContext&&o.value!==active.baseValue){active.actualObserved=true;active.observedValue=o.value;}
+  clearPreviewBridge();
+}`);
+  source=replaceReviewed(source,'value:l,min:d?.min,max:d?.max,step:displayStep','value:previewObserved.current.value,min:d?.min,max:d?.max,step:displayStep');
+  const helpers=String.raw`function clearPreviewBridge(){
+  const scheduler=adjustmentScheduler.current;
+  if(scheduler.bridge)clearTimeout(scheduler.bridge.timer);
+  scheduler.bridge=null;
+}
+function previewBase(current){
+  const bridge=adjustmentScheduler.current.bridge;
+  return bridge?.context===current.context?bridge.value:current.value;
+}
+function completePreview(batch){
+  clearPreviewBridge();
+  const current=adjustmentLive.current;
+  if(batch.context!==current.context||batch.actualObserved||!batch.sent||batch.failed)return;
+  const expected=batch.kind==='absolute'?batch.value:batch.baseValue+batch.steps*batch.step;
+  if(!Number.isFinite(expected))return;
+  const bridge={context:batch.context,value:expected,timer:null};
+  adjustmentScheduler.current.bridge=bridge;
+  bridge.timer=setTimeout(()=>{
+    if(adjustmentScheduler.current.bridge!==bridge)return;
+    adjustmentScheduler.current.bridge=null;
+    if(adjustmentMounted.current)refreshPreview(value=>value+1);
+  },1500);
+}
+(0,P.useEffect)(()=>{
+  if(!lennoxDevice||o?.id==null||!lennoxPreviewDeviceInstance?.makeCapabilityInstance)return;
+  const context=adjustmentContext;
+  const instance=lennoxPreviewDeviceInstance.makeCapabilityInstance(o.id,value=>{
+    if(!adjustmentMounted.current||adjustmentLive.current.context!==context||!Number.isFinite(value))return;
+    previewObserved.current={...previewObserved.current,context,value};
+    adjustmentLive.current.value=value;
+    const active=adjustmentScheduler.current.active;
+    if(active?.context===context&&value!==active.baseValue){active.actualObserved=true;active.observedValue=value;}
+    clearPreviewBridge();
+    refreshPreview(revision=>revision+1);
+  });
+  return()=>instance?.destroy();
+},[lennoxDevice,lennoxPreviewDeviceInstance,o?.id,adjustmentContext]);
+`;
+  source=replaceReviewed(source,'function cancelUnsentAdjustments(){',helpers+'function cancelUnsentAdjustments(){\n  clearPreviewBridge();');
+  const start=source.indexOf('function startAdjustmentBatch('),end=source.indexOf('function flushAdjustments(',start);
+  if(start<0||end<start)throw Error('The reviewed batch scheduler changed');
+  const batch=String.raw`function startAdjustmentBatch(batch){
+  const scheduler=adjustmentScheduler.current;
+  if(!Number.isFinite(batch.baseValue))batch.baseValue=previewBase(adjustmentLive.current);
+  scheduler.active=batch;
+  setAdjustmentPending(true);
+  Promise.resolve().then(()=>{
+    const current=adjustmentLive.current;
+    if(!adjustmentMounted.current||batch.context!==current.context)return;
+    if(batch.kind==='absolute'){
+      if(!current.canWriteAbsolute)return;
+      batch.sent=true;
+      return batch.writer(batch.value);
+    }
+    if(!current.canAdjust)return;
+    batch.sent=true;
+    return batch.writer(true,{steps:Math.abs(batch.steps)});
+  }).catch(()=>{batch.failed=true;clearPreviewBridge();}).finally(()=>{
+    if(scheduler.active!==batch)return;
+    if(adjustmentMounted.current&&!batch.failed)completePreview(batch);
+    scheduler.active=null;
+    if(adjustmentMounted.current){setAdjustmentPending(false);refreshPreview(value=>value+1);flushAdjustments();}
+  });
+}
+`;
+  source=source.slice(0,start)+batch+source.slice(end);
+  source=replaceReviewed(source,"steps,writer,baseValue:current.value,step:current.step","steps,writer,baseValue:previewBase(current),step:current.step");
+  source=replaceReviewed(source,'let base=current.value;\n  if(active?.context===current.context)base=active.kind===\'absolute\'?active.value:active.baseValue+active.steps*active.step;',"let base=previewBase(current);\n  if(active?.context===current.context)base=active.actualObserved?active.observedValue:active.kind==='absolute'?active.value:active.baseValue+active.steps*active.step;");
+  source=replaceReviewed(source,'const pendingEstimate=estimatedTarget(adjustmentLive.current,queuedSteps);',`const pendingEstimate=estimatedTarget(adjustmentLive.current,queuedSteps);
+const previewMinimum=Number.isFinite(d?.min)?d.min:-Infinity;
+const previewMaximum=Number.isFinite(d?.max)?d.max:Infinity;
+const optimisticTarget=Number.isFinite(pendingEstimate)&&previewMinimum<=previewMaximum?Math.max(previewMinimum,Math.min(previewMaximum,pendingEstimate)):l;`);
+  source=replaceReviewed(source,'units:d?.units??null,targetValue:l,targetValueDecimals:','units:d?.units??null,targetValue:lennoxDevice&&canAdjust?optimisticTarget:l,targetValueDecimals:');
+  source=replaceReviewed(source,"flex:'0 0 72px',height:72,width:'100%'","flex:'0 0 48px',height:48,width:'100%'");
+  source=replaceReviewed(source,"(0,L.jsx)('div',{role:'status','aria-live':'polite',style:{fontSize:12,lineHeight:'20px',minHeight:20,textAlign:'center',opacity:0.8},children:adjustmentStatus})",'null');
+  source=replaceReviewed(source,"role:'group','aria-label':'Temperature adjustment',style:","role:'group','aria-label':'Temperature adjustment','aria-busy':isAdjustmentPending||queuedSteps!==0||hasPendingAbsolute,style:");
+  return source;
+}
+const PREVIEW_AFTER=buildPreviewRenderer();
+const PREVIEW_HOOK_AFTER=replaceReviewed(COALESCED_HOOK_AFTER,'let i=o.getable===!0;', 'let i=o.getable===!0&&!(lennoxRequestTimeout===45000&&lennoxDeviceSnapshot?.driverId===`homey:app:com.metalcated.lennox:thermostat`&&[`target_temperature`,`target_temperature.heat`,`target_temperature.cool`].includes(o.id));');
+
+function transformPreviewSource(source){
+  if(typeof source!=='string')throw Error('Expected JavaScript source text');
+  source=replaceReviewed(source,COALESCED_AFTER,PREVIEW_AFTER);
+  return replaceReviewed(source,COALESCED_HOOK_AFTER,PREVIEW_HOOK_AFTER);
+}
+function patchPreviewBundle(input){
+  if(!Buffer.isBuffer(input)||sha256(input)!==PREVIEW_EXPECTED_SHA256)throw Error('Unsupported Homey bundle; the exact reviewed coalescing layer is required');
+  const output=Buffer.from(transformPreviewSource(input.toString('utf8')));
+  const checked=spawnSync(process.execPath,['--check','--input-type=module'],{input:output,encoding:'utf8',maxBuffer:1024*1024});
+  if(checked.error)throw checked.error;
+  if(checked.status!==0)throw Error(`Patched JavaScript failed syntax validation: ${checked.stderr.trim()}`);
+  return{output,report:{homeyVersion:'13.5.3',originalSha256:sha256(input),patchedSha256:sha256(output),replacements:2,driverId:DRIVER_ID}};
+}
+function writePreviewBundle(inputPath,outputPath){
+  if(!inputPath||!outputPath||path.resolve(inputPath)===path.resolve(outputPath))throw Error('Expected separate input and output paths');
+  if(fs.existsSync(outputPath))throw Error('Output already exists');
+  const{output,report}=patchPreviewBundle(fs.readFileSync(inputPath));
+  fs.writeFileSync(outputPath,output,{flag:'wx',mode:0o644});
+  return report;
+}
+
 if (require.main === module) {
   try {
-    const coalesce=process.argv[2]==='--coalesce';
-    const args=process.argv.slice(coalesce?3:2);
-    if(args.length!==2)throw Error('Usage: node patch-homey-13.5.3-thermostat-buttons.cjs [--coalesce] REVIEWED.js OUTPUT.js');
-    process.stdout.write(JSON.stringify((coalesce?writeCoalescedBundle:writePatchedBundle)(...args),null,2)+'\n');
+    const mode=['--coalesce','--preview'].includes(process.argv[2])?process.argv[2]:null;
+    const args=process.argv.slice(mode?3:2);
+    if(args.length!==2)throw Error('Usage: node patch-homey-13.5.3-thermostat-buttons.cjs [--coalesce|--preview] REVIEWED.js OUTPUT.js');
+    const writer=mode==='--preview'?writePreviewBundle:mode==='--coalesce'?writeCoalescedBundle:writePatchedBundle;
+    process.stdout.write(JSON.stringify(writer(...args),null,2)+'\n');
   } catch (error) { process.stderr.write(error.message + '\n'); process.exitCode = 1; }
 }
 
-module.exports = { COALESCED_EXPECTED_SHA256, COALESCED_AFTER, COALESCED_HOOK_AFTER, transformCoalescedSource, patchCoalescedBundle, writeCoalescedBundle, EXPECTED_SHA256, DRIVER_ID, BEFORE, AFTER, HOOK_BEFORE, HOOK_AFTER, transformSource, patchBundle, writePatchedBundle };
+module.exports = { PREVIEW_EXPECTED_SHA256, PREVIEW_AFTER, PREVIEW_HOOK_AFTER, transformPreviewSource, patchPreviewBundle, writePreviewBundle, COALESCED_EXPECTED_SHA256, COALESCED_AFTER, COALESCED_HOOK_AFTER, transformCoalescedSource, patchCoalescedBundle, writeCoalescedBundle, EXPECTED_SHA256, DRIVER_ID, BEFORE, AFTER, HOOK_BEFORE, HOOK_AFTER, transformSource, patchBundle, writePatchedBundle };

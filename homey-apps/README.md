@@ -1,11 +1,13 @@
 # Homey apps
 
-Independent Homey SDK v3 apps live here. Each app has its own manifest, dependencies, tests, version, and installation workflow. They are excluded from the AirGradient npm package.
+The Lennox Homey SDK v3 app now lives in its own [metalcated/homey-lennox repository](https://github.com/metalcated/homey-lennox), including its history, tests, documentation, and installation workflow.
 
-| Folder | Status |
+The remaining directories are placeholders for future apps and are excluded from the AirGradient npm package.
+
+| Project | Status |
 | --- | --- |
-| [lennox](lennox/README.md) | Local iComfort integration; see validation and installation notes |
+| [Lennox](https://github.com/metalcated/homey-lennox) | Moved to its dedicated repository |
 | [rinnai](rinnai/README.md) | Reserved for a future Control-R app |
 | [alarmcom](alarmcom/README.md) | Reserved for a future Alarm.com app |
 
-Install each app from its own directory. Do not run Homey commands from the AirGradient repository root. Development dependencies are installed in containers; no local npm installation is required.
+Install Lennox from its dedicated checkout with `bash scripts/install.sh`. Do not run Homey commands from the AirGradient repository root. Development dependencies are installed in containers; no local npm installation is required.
